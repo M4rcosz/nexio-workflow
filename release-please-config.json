@@ -1,10 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "release-type": "java",
+  "release-type": "simple",
   "packages": {
     ".": {
-      "release-type": "java",
-      "release-as": "0.1.0",
+      "release-type": "simple",
+      "extra-files": [
+        { "type": "generic", "path": "pom.xml" }
+      ],
       "changelog-sections": [
         { "type": "feat",     "section": "Features"     },
         { "type": "fix",      "section": "Bug Fixes"    },
