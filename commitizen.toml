@@ -1,0 +1,7 @@
+[tool.commitizen]
+version_provider = "pom"
+tag_format = "v$version"
+update_changelog_on_bump = true
+
+[tool.commitizen.customize]
+schema_pattern = "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\(.+\\))?(!)?: .{1,100}"

@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: nexio-workflow
+
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://nexio:nexio@localhost:27017/nexio_workflow?authSource=admin}
+
+  graphql:
+    graphiql:
+      enabled: ${GRAPHIQL_ENABLED:true}
+    path: /graphql
+    schema:
+      locations: classpath:graphql/**/
+
+server:
+  port: ${PORT:8080}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  data:
+    mongodb:
+      # sobrescrito pelo Testcontainers via @DynamicPropertySource
+      uri: mongodb://localhost:27017/nexio_workflow_test

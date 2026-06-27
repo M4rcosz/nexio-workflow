@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.29.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      - id: checkstyle
+        name: Checkstyle
+        entry: mvn checkstyle:check -q
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

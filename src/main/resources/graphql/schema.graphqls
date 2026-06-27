@@ -1,0 +1,127 @@
+scalar DateTime
+scalar JSON
+
+# --- QUERIES ---
+type Query {
+  workflows(tenantId: String!): [WorkflowDefinition!]!
+  workflow(id: ID!): WorkflowDefinition
+
+  executions(workflowId: ID!): [WorkflowExecution!]!
+  execution(id: ID!): WorkflowExecution
+}
+
+# --- MUTATIONS ---
+type Mutation {
+  createWorkflow(input: CreateWorkflowInput!): WorkflowDefinition!
+  updateWorkflow(id: ID!, input: UpdateWorkflowInput!): WorkflowDefinition!
+  deleteWorkflow(id: ID!): Boolean!
+  activateWorkflow(id: ID!): WorkflowDefinition!
+  deactivateWorkflow(id: ID!): WorkflowDefinition!
+
+  # dispara execucao manual (mock trigger)
+  triggerWorkflow(id: ID!, payload: JSON): WorkflowExecution!
+}
+
+# --- TYPES ---
+type WorkflowDefinition {
+  id: ID!
+  tenantId: String!
+  name: String!
+  description: String
+  trigger: TriggerConfig!
+  nodes: [WorkflowNode!]!
+  active: Boolean!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type TriggerConfig {
+  type: TriggerType!
+  config: JSON
+  # MOCK_EVENT: {} (sem config extra)
+  # SCHEDULE:   { "cron": "0 8 * * 1-5" }
+}
+
+type WorkflowNode {
+  id: String!
+  type: NodeType!
+  config: JSON!
+  # HTTP_REQUEST:  { "url": "...", "method": "POST", "headers": {}, "body": {} }
+  # CONDITION:     { "expression": "total > 100", "nextOnTrue": "node-2", "nextOnFalse": "node-3" }
+  nextOnSuccess: String
+  nextOnFailure: String
+}
+
+type WorkflowExecution {
+  id: ID!
+  workflowDefinitionId: ID!
+  tenantId: String!
+  triggerPayload: JSON
+  status: ExecutionStatus!
+  steps: [ExecutionStep!]!
+  startedAt: DateTime!
+  finishedAt: DateTime
+}
+
+type ExecutionStep {
+  nodeId: String!
+  nodeType: NodeType!
+  status: StepStatus!
+  output: JSON
+  errorMessage: String
+  startedAt: DateTime!
+  finishedAt: DateTime
+}
+
+# --- ENUMS ---
+enum TriggerType {
+  MOCK_EVENT
+  SCHEDULE
+}
+
+enum NodeType {
+  HTTP_REQUEST
+  CONDITION
+}
+
+enum ExecutionStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum StepStatus {
+  SUCCESS
+  FAILURE
+  SKIPPED
+}
+
+# --- INPUTS ---
+input CreateWorkflowInput {
+  tenantId: String!
+  name: String!
+  description: String
+  trigger: TriggerConfigInput!
+  nodes: [WorkflowNodeInput!]!
+}
+
+input UpdateWorkflowInput {
+  name: String
+  description: String
+  trigger: TriggerConfigInput
+  nodes: [WorkflowNodeInput!]
+}
+
+input TriggerConfigInput {
+  type: TriggerType!
+  config: JSON
+}
+
+input WorkflowNodeInput {
+  id: String!
+  type: NodeType!
+  config: JSON!
+  nextOnSuccess: String
+  nextOnFailure: String
+}
