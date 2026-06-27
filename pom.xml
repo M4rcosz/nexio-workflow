@@ -15,7 +15,7 @@
 
   <groupId>com.nexio</groupId>
   <artifactId>nexio-workflow</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0</version> <!-- x-release-please-version -->
   <name>nexio-workflow</name>
   <description>Nexio Workflow Engine — automacao de workflows com Java 25 + Spring Boot + GraphQL + MongoDB</description>
 
