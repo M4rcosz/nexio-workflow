@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 jobs:
   build-and-test:
@@ -21,7 +21,7 @@ jobs:
           cache: maven
 
       - name: Build and test
-        run: mvn verify
+        run: ./mvnw verify
         # mvn verify = compile + teste unitario + integration test (Testcontainers sobe MongoDB)
 
   deploy:
