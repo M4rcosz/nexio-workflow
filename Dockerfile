@@ -1,10 +1,11 @@
-FROM maven:3.9-eclipse-temurin-25 AS builder
+FROM eclipse-temurin:25-jdk AS builder
 WORKDIR /app
-COPY pom.xml .
-RUN mvn dependency:go-offline -q
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
+RUN ./mvnw dependency:go-offline -q
 COPY checkstyle.xml .
 COPY src ./src
-RUN mvn clean package -DskipTests -q
+RUN ./mvnw clean package -DskipTests -q
 
 FROM eclipse-temurin:25-jre
 WORKDIR /app
