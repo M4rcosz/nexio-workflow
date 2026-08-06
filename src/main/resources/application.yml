@@ -15,6 +15,12 @@ spring:
     schema:
       locations: classpath:graphql/**/
 
+nexio:
+  http:
+    # requisicoes de saida dos nos de workflow so podem usar https; http em texto claro fica
+    # restrito a dev/teste, onde o alvo e um servico local
+    allow-insecure-http: ${NEXIO_HTTP_ALLOW_INSECURE:false}
+
 server:
   port: ${PORT:8080}
 
@@ -38,3 +44,7 @@ spring:
     mongodb:
       # sobrescrito pelo Testcontainers via @DynamicPropertySource
       uri: mongodb://localhost:27017/nexio_workflow_test
+
+nexio:
+  http:
+    allow-insecure-http: true
