@@ -1,7 +1,9 @@
 package com.nexio.workflow.infrastructure.mongodb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
+import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.model.TriggerConfig;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
@@ -39,7 +41,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @Testcontainers
 @DataMongoTest
-@Import({MongoConfig.class, WorkflowDefinitionMongoAdapter.class})
+@Import({MongoConfig.class,
+        WorkflowDefinitionMongoAdapter.class,
+        WorkflowDefinitionWriteValidationCallback.class})
 class WorkflowDefinitionMongoAdapterTest {
 
     @Container
@@ -51,6 +55,9 @@ class WorkflowDefinitionMongoAdapterTest {
 
     @Autowired
     private MongoTemplate mongoTemplate;
+
+    @Autowired
+    private WorkflowDefinitionMongoRepository repository;
 
     @BeforeEach
     void cleanCollection() {
@@ -81,13 +88,96 @@ class WorkflowDefinitionMongoAdapterTest {
     }
 
     @Test
-    void findAllReturnsEveryDefinition() {
+    void findAllReturnsEveryDefinitionWithinThePage() {
         port.save(definition("wf-a", "a", true, TriggerType.MOCK_EVENT));
         port.save(definition("wf-b", "b", false, TriggerType.SCHEDULE));
 
-        assertThat(port.findAll())
+        assertThat(port.findAll(PageQuery.firstPage()))
                 .extracting(WorkflowDefinition::getId)
                 .containsExactlyInAnyOrder("wf-a", "wf-b");
+    }
+
+    /**
+     * O recorte e obrigatorio na porta justamente para que nenhuma consulta volte a colecao
+     * inteira: aqui o limite corta o resultado e o deslocamento anda pela colecao.
+     */
+    @Test
+    void findAllHonoursLimitAndOffset() {
+        port.save(definition("wf-1", "um", true, TriggerType.MOCK_EVENT));
+        port.save(definition("wf-2", "dois", true, TriggerType.MOCK_EVENT));
+        port.save(definition("wf-3", "tres", true, TriggerType.MOCK_EVENT));
+
+        List<WorkflowDefinition> firstPage = port.findAll(new PageQuery(2, 0));
+        List<WorkflowDefinition> secondPage = port.findAll(new PageQuery(2, 2));
+
+        assertThat(firstPage).hasSize(2);
+        assertThat(secondPage).hasSize(1);
+        assertThat(firstPage).extracting(WorkflowDefinition::getId)
+                .doesNotContainAnyElementsOf(
+                        secondPage.stream().map(WorkflowDefinition::getId).toList());
+    }
+
+    /**
+     * O teto de {@value PageQuery#MAX_LIMIT} e do servidor: o chamador nao consegue pedir mais.
+     */
+    @Test
+    void pageQueryRejectsLimitsOutsideTheServerBudget() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new PageQuery(PageQuery.MAX_LIMIT + 1, 0))
+                .withMessageContaining("excede o maximo");
+        assertThatIllegalArgumentException().isThrownBy(() -> new PageQuery(0, 0));
+        assertThatIllegalArgumentException().isThrownBy(() -> new PageQuery(10, -1));
+    }
+
+    /**
+     * Consulta declarada desde o inicio e nunca exercitada: o bootstrap do contexto so prova que
+     * ela e derivavel, nao que ela casa com o campo certo -- foi exatamente assim que o bug de
+     * {@code nodes.id} sobreviveu.
+     */
+    @Test
+    void findByTriggerConfigTypeMatchesTheEmbeddedTriggerType() {
+        port.save(definition("wf-cron-1", "agendada 1", true, TriggerType.SCHEDULE));
+        port.save(definition("wf-cron-2", "agendada 2", false, TriggerType.SCHEDULE));
+        port.save(definition("wf-evento", "por evento", true, TriggerType.MOCK_EVENT));
+
+        assertThat(repository.findByTriggerConfigType(TriggerType.SCHEDULE))
+                .extracting(WorkflowDefinition::getId)
+                .containsExactlyInAnyOrder("wf-cron-1", "wf-cron-2");
+        assertThat(repository.findByTriggerConfigType(TriggerType.MOCK_EVENT))
+                .extracting(WorkflowDefinition::getId)
+                .containsExactly("wf-evento");
+    }
+
+    /**
+     * O callback de persistencia recusa grafo invalido em qualquer save, sem depender de o caso de
+     * uso ter lembrado de chamar {@code validateGraph()}.
+     */
+    @Test
+    void saveRejectsInvalidGraphThroughTheWriteCallback() {
+        WorkflowDefinition definition = definition("wf-ciclo", "ciclica", true, TriggerType.MOCK_EVENT);
+        definition.setNodes(List.of(
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
+                new WorkflowNode("check", NodeType.HTTP_REQUEST, Map.of(), "start", null, null)));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> port.save(definition))
+                .withMessageContaining("ciclo");
+        assertThat(port.findById("wf-ciclo")).isEmpty();
+    }
+
+    /**
+     * A config do no e mapa livre: a politica estrita dela vale na escrita.
+     */
+    @Test
+    void saveRejectsOperatorKeysInNodeConfigThroughTheWriteCallback() {
+        WorkflowDefinition definition = definition("wf-config", "config hostil", true, TriggerType.MOCK_EVENT);
+        definition.setNodes(List.of(
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("$where", "1"), null, null, null)));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> port.save(definition))
+                .withMessageContaining("'$'");
+        assertThat(port.findById("wf-config")).isEmpty();
     }
 
     @Test
@@ -127,7 +217,8 @@ class WorkflowDefinitionMongoAdapterTest {
         port.save(definition("wf-sobrevivente", "nao pode sumir", true, TriggerType.MOCK_EVENT));
 
         assertThat(port.deleteById("wf-nunca-existiu")).isFalse();
-        assertThat(port.findAll()).extracting(WorkflowDefinition::getId).containsExactly("wf-sobrevivente");
+        assertThat(port.findAll(PageQuery.firstPage()))
+                .extracting(WorkflowDefinition::getId).containsExactly("wf-sobrevivente");
     }
 
     @Test
@@ -137,7 +228,8 @@ class WorkflowDefinitionMongoAdapterTest {
 
         assertThat(port.deleteById("wf-alvo")).isTrue();
         assertThat(port.deleteById("wf-alvo")).isFalse();
-        assertThat(port.findAll()).extracting(WorkflowDefinition::getId).containsExactly("wf-vizinho");
+        assertThat(port.findAll(PageQuery.firstPage()))
+                .extracting(WorkflowDefinition::getId).containsExactly("wf-vizinho");
     }
 
     private WorkflowDefinition definition(String id, String name, boolean enabled, TriggerType triggerType) {

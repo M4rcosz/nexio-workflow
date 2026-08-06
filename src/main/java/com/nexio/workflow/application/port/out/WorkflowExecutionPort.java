@@ -29,12 +29,16 @@ public interface WorkflowExecutionPort {
     Optional<WorkflowExecution> findById(String id);
 
     /**
-     * Lista as execucoes de uma definicao, da mais recente para a mais antiga.
+     * Lista as execucoes de uma definicao dentro do recorte informado, da mais recente para a mais
+     * antiga.
+     *
+     * <p>A paginacao e obrigatoria porque esta colecao cresce um documento por disparo, sem teto.</p>
      *
      * @param workflowId identificador da definicao de workflow
-     * @return lista de execucoes, vazia quando nao ha registros
+     * @param page       recorte de paginacao, nunca nulo
+     * @return lista de execucoes, vazia quando nao ha registros no recorte
      */
-    List<WorkflowExecution> findByWorkflowId(String workflowId);
+    List<WorkflowExecution> findByWorkflowId(String workflowId, PageQuery page);
 
     /**
      * Remove todas as execucoes de uma definicao, evitando execucoes orfas quando a definicao e apagada.

@@ -3,6 +3,7 @@ package com.nexio.workflow.infrastructure.mongodb;
 import com.nexio.workflow.domain.model.WorkflowExecution;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
 import java.util.List;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.repository.MongoRepository;
 
 /**
@@ -14,16 +15,21 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 public interface WorkflowExecutionMongoRepository extends MongoRepository<WorkflowExecution, String> {
 
     /**
-     * Lista as execucoes de uma definicao, da mais recente para a mais antiga.
+     * Lista uma pagina das execucoes de uma definicao, da mais recente para a mais antiga.
      *
-     * <p>A ordenacao casa exatamente com o indice composto {@code exec_workflow_started}
-     * ({@code {workflowId: 1, startedAt: -1}}) declarado na entidade, entao a consulta e coberta
+     * <p>Ordena por {@code createdAt}, e nao por {@code startedAt}: {@code startedAt} so e
+     * preenchido em {@code markRunning}, e como o nulo ordena como menor valor no MongoDB, uma
+     * execucao recem criada (PENDING) apareceria por ultimo na lista de mais recentes.</p>
+     *
+     * <p>A ordenacao casa exatamente com o indice composto {@code exec_workflow_created}
+     * ({@code {workflowId: 1, createdAt: -1}}) declarado na entidade, entao a consulta e coberta
      * pelo indice e nao exige ordenacao em memoria.</p>
      *
      * @param workflowId identificador da definicao de workflow
-     * @return lista de execucoes ordenada por {@code startedAt} decrescente, vazia quando nao ha registros
+     * @param pageable   recorte da consulta
+     * @return lista de execucoes ordenada por {@code createdAt} decrescente, vazia quando nao ha registros
      */
-    List<WorkflowExecution> findByWorkflowIdOrderByStartedAtDesc(String workflowId);
+    List<WorkflowExecution> findByWorkflowIdOrderByCreatedAtDesc(String workflowId, Pageable pageable);
 
     /**
      * Lista as execucoes em um determinado estado.

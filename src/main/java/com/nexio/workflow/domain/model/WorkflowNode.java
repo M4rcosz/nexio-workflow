@@ -13,6 +13,11 @@ import java.util.Objects;
  * toda consulta por {@code nodes.id} casava zero documentos silenciosamente. O nome tambem fica
  * consistente com {@link ExecutionStep#nodeId()}.
  *
+ * <p>O construtor compacto usa {@link MapSanitizer#copy(Map, String)}, que e leniente, e nao a
+ * validacao estrita: este construtor tambem roda quando o Spring Data hidrata o documento lido do
+ * MongoDB, e regra estrita ali derrubaria a leitura da colecao inteira. A validacao estrita da
+ * config acontece na escrita, no callback de persistencia.</p>
+ *
  * @param nodeId        identificador do no dentro do workflow
  * @param type          tipo do no
  * @param config        parametros especificos do no
@@ -32,6 +37,6 @@ public record WorkflowNode(
     public WorkflowNode {
         Objects.requireNonNull(nodeId, "nodeId do no nao pode ser nulo");
         Objects.requireNonNull(type, "type do no nao pode ser nulo");
-        config = MapSanitizer.sanitize(config, "nodes.config");
+        config = MapSanitizer.copy(config, "nodes.config");
     }
 }

@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.Version;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
@@ -15,9 +16,14 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 /**
  * Registro de uma execucao de {@link WorkflowDefinition}, com o resultado de cada no percorrido.
+ *
+ * <p>O historico e ordenado por {@code createdAt}, e nao por {@code startedAt}: a execucao nasce
+ * PENDING e so ganha {@code startedAt} em {@link #markRunning(Instant)}, e no MongoDB o nulo
+ * ordena como o menor valor. Ordenar por {@code startedAt} jogaria a execucao recem disparada para
+ * o fim de uma lista "mais recentes primeiro" -- justamente a que o usuario esta esperando ver.</p>
  */
 @Document(collection = "workflow_executions")
-@CompoundIndex(name = "exec_workflow_started", def = "{'workflowId': 1, 'startedAt': -1}")
+@CompoundIndex(name = "exec_workflow_created", def = "{'workflowId': 1, 'createdAt': -1}")
 public class WorkflowExecution {
 
     /**
@@ -44,6 +50,13 @@ public class WorkflowExecution {
     @Version
     private Long version;
 
+    /**
+     * Momento em que a execucao foi registrada. Preenchido pela auditoria do Spring Data e usado
+     * como criterio de ordenacao do historico, porque existe desde o primeiro save, ainda PENDING.
+     */
+    @CreatedDate
+    private Instant createdAt;
+
     private Instant startedAt;
 
     private Instant finishedAt;
@@ -69,12 +82,18 @@ public class WorkflowExecution {
         this.workflowId = workflowId;
     }
 
+    /**
+     * Devolve o estado atual da execucao.
+     *
+     * <p>Nao existe {@code setStatus} publico de proposito: o estado so muda pelas transicoes
+     * {@link #markRunning(Instant)}, {@link #markSucceeded(Instant)} e
+     * {@link #markFailed(String, Instant)}, que verificam a maquina de estados. A hidratacao pelo
+     * Spring Data nao precisa do setter porque o mapeamento escreve direto no campo.</p>
+     *
+     * @return estado atual da execucao
+     */
     public ExecutionStatus getStatus() {
         return status;
-    }
-
-    public void setStatus(ExecutionStatus status) {
-        this.status = status;
     }
 
     /**
@@ -87,13 +106,15 @@ public class WorkflowExecution {
     }
 
     /**
-     * Valida e copia em profundidade o payload do gatilho, que vem de fonte nao confiavel.
+     * Copia em profundidade o payload do gatilho, que vem de fonte nao confiavel.
+     *
+     * <p>A copia e leniente ({@link MapSanitizer#copy(Map, String)}); a politica estrita e aplicada
+     * na escrita, pelo callback de persistencia.</p>
      *
      * @param triggerPayload payload recebido, pode ser nulo
-     * @throws IllegalArgumentException quando o payload viola as regras de chaves, tipos ou limites
      */
     public void setTriggerPayload(Map<String, Object> triggerPayload) {
-        this.triggerPayload = MapSanitizer.sanitize(triggerPayload, "triggerPayload");
+        this.triggerPayload = MapSanitizer.copy(triggerPayload, "triggerPayload");
     }
 
     /**
@@ -105,7 +126,22 @@ public class WorkflowExecution {
         return Collections.unmodifiableList(steps);
     }
 
+    /**
+     * Substitui a lista de passos, aplicando o mesmo teto de {@link #addStep(ExecutionStep)}.
+     *
+     * <p>Sem o teto aqui, quem chamasse {@code setSteps} passaria direto pelo limite que
+     * {@code addStep} protege. A hidratacao do Spring Data nao passa por este setter (o mapeamento
+     * escreve direto no campo), entao a regra vale so para codigo da aplicacao e nao impede reler
+     * um documento antigo acima do limite.</p>
+     *
+     * @param steps passos da execucao, pode ser nulo
+     * @throws IllegalArgumentException quando a lista excede {@value #MAX_STEPS} passos
+     */
     public void setSteps(List<ExecutionStep> steps) {
+        if (steps != null && steps.size() > MAX_STEPS) {
+            throw new IllegalArgumentException(
+                    "Limite de " + MAX_STEPS + " passos excedido na execucao '" + id + "': " + steps.size());
+        }
         this.steps = steps == null ? new ArrayList<>() : new ArrayList<>(steps);
     }
 
@@ -128,20 +164,26 @@ public class WorkflowExecution {
      * Marca a execucao como em andamento.
      *
      * @param startedAt momento de inicio
+     * @throws IllegalStateException quando a execucao nao esta PENDING
      */
     public void markRunning(Instant startedAt) {
+        Objects.requireNonNull(startedAt, "startedAt nao pode ser nulo");
+        requireCurrentStatus(ExecutionStatus.PENDING, ExecutionStatus.RUNNING);
         this.status = ExecutionStatus.RUNNING;
-        this.startedAt = Objects.requireNonNull(startedAt, "startedAt nao pode ser nulo");
+        this.startedAt = startedAt;
     }
 
     /**
      * Marca a execucao como concluida com sucesso.
      *
      * @param finishedAt momento de termino
+     * @throws IllegalStateException quando a execucao nao esta RUNNING
      */
     public void markSucceeded(Instant finishedAt) {
+        Objects.requireNonNull(finishedAt, "finishedAt nao pode ser nulo");
+        requireCurrentStatus(ExecutionStatus.RUNNING, ExecutionStatus.SUCCESS);
         this.status = ExecutionStatus.SUCCESS;
-        this.finishedAt = Objects.requireNonNull(finishedAt, "finishedAt nao pode ser nulo");
+        this.finishedAt = finishedAt;
         this.errorMessage = null;
     }
 
@@ -150,11 +192,34 @@ public class WorkflowExecution {
      *
      * @param errorMessage mensagem de erro
      * @param finishedAt   momento de termino
+     * @throws IllegalStateException quando a execucao nao esta RUNNING
      */
     public void markFailed(String errorMessage, Instant finishedAt) {
+        Objects.requireNonNull(errorMessage, "errorMessage nao pode ser nulo");
+        Objects.requireNonNull(finishedAt, "finishedAt nao pode ser nulo");
+        requireCurrentStatus(ExecutionStatus.RUNNING, ExecutionStatus.FAILED);
         this.status = ExecutionStatus.FAILED;
-        this.errorMessage = Objects.requireNonNull(errorMessage, "errorMessage nao pode ser nulo");
-        this.finishedAt = Objects.requireNonNull(finishedAt, "finishedAt nao pode ser nulo");
+        this.errorMessage = errorMessage;
+        this.finishedAt = finishedAt;
+    }
+
+    /**
+     * Guarda da maquina de estados {@code PENDING -> RUNNING -> (SUCCESS | FAILED)}.
+     *
+     * <p>SUCCESS e FAILED sao terminais. Sem esta guarda, um retry assincrono que chamasse
+     * {@code markSucceeded} depois de um {@code markFailed} apagaria a mensagem de erro e a
+     * execucao reportaria sucesso para uma rodada que falhou.</p>
+     *
+     * @param required estado exigido para a transicao
+     * @param target   estado de destino, usado na mensagem de erro
+     * @throws IllegalStateException quando a execucao nao esta no estado exigido
+     */
+    private void requireCurrentStatus(ExecutionStatus required, ExecutionStatus target) {
+        if (status != required) {
+            throw new IllegalStateException(
+                    "Transicao de estado invalida na execucao '" + id + "': " + status + " -> " + target
+                            + ". Transicoes validas: PENDING -> RUNNING -> SUCCESS ou FAILED");
+        }
     }
 
     public Long getVersion() {
@@ -163,6 +228,14 @@ public class WorkflowExecution {
 
     public void setVersion(Long version) {
         this.version = version;
+    }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(Instant createdAt) {
+        this.createdAt = createdAt;
     }
 
     public Instant getStartedAt() {

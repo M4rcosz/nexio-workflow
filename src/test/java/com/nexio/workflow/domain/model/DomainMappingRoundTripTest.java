@@ -1,12 +1,15 @@
 package com.nexio.workflow.domain.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.StepStatus;
 import com.nexio.workflow.domain.model.enums.TriggerType;
 import com.nexio.workflow.infrastructure.config.MongoConfig;
+import com.nexio.workflow.infrastructure.mongodb.WorkflowDefinitionWriteValidationCallback;
+import com.nexio.workflow.infrastructure.mongodb.WorkflowExecutionWriteValidationCallback;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -37,7 +40,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @Testcontainers
 @DataMongoTest
-@Import(MongoConfig.class)
+@Import({MongoConfig.class,
+        WorkflowDefinitionWriteValidationCallback.class,
+        WorkflowExecutionWriteValidationCallback.class})
 class DomainMappingRoundTripTest {
 
     @Container
@@ -181,7 +186,109 @@ class DomainMappingRoundTripTest {
         mongoTemplate.save(definition);
 
         assertThat(indexNames(DEFINITIONS)).contains("def_enabled_trigger");
-        assertThat(indexNames(EXECUTIONS)).contains("exec_workflow_started");
+        assertThat(indexNames(EXECUTIONS)).contains("exec_workflow_created");
+    }
+
+    /**
+     * Responde, contra um MongoDB real, se o Spring Data usa o setter publico
+     * {@code setTriggerPayload} na hidratacao ou se escreve direto no campo.
+     *
+     * <p>RESULTADO OBSERVADO: escreve <b>direto no campo</b>. Este documento e inserido cru, com
+     * chaves que a politica estrita rejeita ({@code $where}, {@code _class}, {@code weird key!!}),
+     * e mesmo assim {@code findById} devolve a entidade com o payload intacto -- prova de que o
+     * setter (e portanto o {@code MapSanitizer}) nao roda na leitura. O Spring Data so usa
+     * acessores quando a propriedade e anotada com {@code @AccessType(PROPERTY)}; o padrao e acesso
+     * direto ao campo.</p>
+     *
+     * <p>Os construtores compactos dos records, ao contrario, <b>rodam</b> na hidratacao: e por
+     * isso que {@code ExecutionStep.output} tambem precisa da copia leniente. Com a regra estrita
+     * ali, este mesmo documento derrubava {@code findById} e, junto com ele, qualquer
+     * {@code findAll}/{@code findByWorkflowId} que o incluisse -- sem nenhum caminho pela aplicacao
+     * para ler ou corrigir o registro.</p>
+     */
+    @Test
+    void malformedDocumentsStayReadableBecauseHydrationIsLenient() {
+        Document hostilePayload = new Document("$where", "1")
+                .append("_class", "java.lang.String")
+                .append("weird key!!", 1);
+        Document raw = new Document("_id", "exec-malformado")
+                .append("workflowId", "wf-malformado")
+                .append("status", "PENDING")
+                .append("triggerPayload", hostilePayload)
+                .append("steps", List.of(new Document("nodeId", "start")
+                        .append("status", "SUCCESS")
+                        .append("output", new Document("$bad", 1))))
+                .append("version", 0L);
+        mongoTemplate.getCollection(EXECUTIONS).insertOne(raw);
+        mongoTemplate.save(sampleExecution("exec-vizinho"));
+
+        WorkflowExecution reread = mongoTemplate.findById("exec-malformado", WorkflowExecution.class);
+
+        assertThat(reread).isNotNull();
+        assertThat(reread.getTriggerPayload())
+                .containsEntry("$where", "1")
+                .containsEntry("_class", "java.lang.String")
+                .containsEntry("weird key!!", 1);
+        assertThat(reread.getSteps()).hasSize(1);
+        assertThat(reread.getSteps().getFirst().output()).containsEntry("$bad", 1);
+
+        // e o documento malformado nao contamina a listagem: os vizinhos continuam legiveis
+        assertThat(mongoTemplate.findAll(WorkflowExecution.class))
+                .extracting(WorkflowExecution::getId)
+                .contains("exec-malformado", "exec-vizinho");
+    }
+
+    /**
+     * A escrita, ao contrario da leitura, e estrita: o callback de persistencia recusa o payload
+     * com chave de operador antes de qualquer coisa chegar ao banco.
+     */
+    @Test
+    void writesAreStrictEvenThoughReadsAreLenient() {
+        WorkflowExecution execution = new WorkflowExecution();
+        execution.setId("exec-escrita-estrita");
+        execution.setWorkflowId("wf-round-trip");
+        execution.setTriggerPayload(Map.of("$where", "1"));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> mongoTemplate.save(execution))
+                .withMessageContaining("'$'");
+        assertThat(rawById(EXECUTIONS, "exec-escrita-estrita")).isNull();
+    }
+
+    /**
+     * O grafo passou a ser validado no proprio caminho de persistencia: antes disso
+     * {@code validateGraph()} nao tinha nenhum chamador de producao e um grafo ciclico podia ser
+     * gravado sem que nada reclamasse.
+     */
+    @Test
+    void cyclicGraphCannotBePersisted() {
+        WorkflowDefinition definition = sampleDefinition("wf-ciclico");
+        definition.setNodes(List.of(
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
+                new WorkflowNode("check", NodeType.HTTP_REQUEST, Map.of(), "start", null, null)));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> mongoTemplate.save(definition))
+                .withMessageContaining("ciclo");
+        assertThat(rawById(DEFINITIONS, "wf-ciclico")).isNull();
+    }
+
+    /**
+     * A auditoria preenche {@code createdAt} ja no primeiro save, ainda PENDING, que e o que torna
+     * possivel ordenar o historico por ele em vez de por {@code startedAt}.
+     */
+    @Test
+    void executionGetsCreatedAtOnTheVeryFirstSave() {
+        WorkflowExecution pending = new WorkflowExecution();
+        pending.setId("exec-pendente");
+        pending.setWorkflowId("wf-round-trip");
+
+        WorkflowExecution saved = mongoTemplate.save(pending);
+
+        assertThat(saved.getStatus()).isEqualTo(ExecutionStatus.PENDING);
+        assertThat(saved.getStartedAt()).isNull();
+        assertThat(saved.getCreatedAt()).isNotNull();
+        assertThat(rawById(EXECUTIONS, "exec-pendente").getDate("createdAt")).isNotNull();
     }
 
     private List<String> indexNames(String collection) {

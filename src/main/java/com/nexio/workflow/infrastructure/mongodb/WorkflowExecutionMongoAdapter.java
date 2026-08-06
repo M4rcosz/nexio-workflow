@@ -1,5 +1,6 @@
 package com.nexio.workflow.infrastructure.mongodb;
 
+import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.model.WorkflowExecution;
 import java.util.List;
@@ -40,12 +41,14 @@ public class WorkflowExecutionMongoAdapter implements WorkflowExecutionPort {
     /**
      * {@inheritDoc}
      *
-     * <p>A ordem decrescente por {@code startedAt} e a util para o historico de execucoes e e
-     * servida pelo indice composto {@code exec_workflow_started} ja declarado na entidade.</p>
+     * <p>A ordem decrescente por {@code createdAt} e a util para o historico de execucoes e e
+     * servida pelo indice composto {@code exec_workflow_created} ja declarado na entidade. O
+     * recorte do dominio vira um {@link OffsetPageable} aqui dentro: nenhum tipo do Spring Data
+     * aparece na assinatura da porta.</p>
      */
     @Override
-    public List<WorkflowExecution> findByWorkflowId(String workflowId) {
-        return repository.findByWorkflowIdOrderByStartedAtDesc(workflowId);
+    public List<WorkflowExecution> findByWorkflowId(String workflowId, PageQuery page) {
+        return repository.findByWorkflowIdOrderByCreatedAtDesc(workflowId, OffsetPageable.of(page));
     }
 
     @Override

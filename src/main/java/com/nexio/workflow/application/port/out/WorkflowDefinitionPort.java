@@ -29,14 +29,21 @@ public interface WorkflowDefinitionPort {
     Optional<WorkflowDefinition> findById(String id);
 
     /**
-     * Lista todas as definicoes cadastradas.
+     * Lista as definicoes cadastradas dentro do recorte informado.
      *
-     * @return lista de definicoes, vazia quando nao ha registros
+     * @param page recorte de paginacao, nunca nulo
+     * @return lista de definicoes, vazia quando nao ha registros no recorte
      */
-    List<WorkflowDefinition> findAll();
+    List<WorkflowDefinition> findAll(PageQuery page);
 
     /**
-     * Lista somente as definicoes habilitadas, usadas pelos gatilhos em tempo de execucao.
+     * Lista todas as definicoes habilitadas, usadas pelos gatilhos em tempo de execucao.
+     *
+     * <p>Unico metodo de listagem sem paginacao, de proposito: o agendador precisa registrar o cron
+     * de todas as definicoes habilitadas de uma vez, e uma pagina qualquer significaria workflows
+     * silenciosamente nunca disparados. A colecao tambem nao cresce por disparo -- ela e limitada
+     * pelo numero de workflows que alguem cadastrou, e o teto de {@code MAX_NODES} limita o tamanho
+     * de cada documento.</p>
      *
      * @return lista de definicoes habilitadas, vazia quando nao ha registros
      */

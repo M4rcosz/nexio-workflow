@@ -115,7 +115,22 @@ public class WorkflowDefinition {
         return Collections.unmodifiableList(nodes);
     }
 
+    /**
+     * Substitui os nos do workflow, aplicando o teto de {@value #MAX_NODES} nos.
+     *
+     * <p>O teto tambem e verificado em {@link #validateGraph()}, mas ali so vale para quem chama a
+     * validacao; aqui ele fecha o caminho de quem chama apenas o setter. A hidratacao do Spring
+     * Data nao passa por este setter (o mapeamento escreve direto no campo), entao a regra vale so
+     * para codigo da aplicacao e nao impede reler um documento antigo acima do limite.</p>
+     *
+     * @param nodes nos do workflow, pode ser nulo
+     * @throws IllegalArgumentException quando a lista excede {@value #MAX_NODES} nos
+     */
     public void setNodes(List<WorkflowNode> nodes) {
+        if (nodes != null && nodes.size() > MAX_NODES) {
+            throw new IllegalArgumentException(
+                    "O workflow excede o limite de " + MAX_NODES + " nos: " + nodes.size());
+        }
         this.nodes = nodes == null ? new ArrayList<>() : new ArrayList<>(nodes);
     }
 
@@ -155,8 +170,8 @@ public class WorkflowDefinition {
      * Valida as invariantes do grafo de nos.
      *
      * <p>Nao e chamado por {@link #setNodes(List)} de proposito: a entidade precisa continuar
-     * hidratavel a partir do MongoDB sem disparar validacao. Os casos de uso invocam este metodo
-     * explicitamente antes de persistir.</p>
+     * hidratavel a partir do MongoDB sem disparar validacao. Quem garante a chamada e o callback de
+     * persistencia, que roda em todo save independentemente do caso de uso que o disparou.</p>
      *
      * @throws IllegalArgumentException quando alguma invariante do grafo e violada
      */

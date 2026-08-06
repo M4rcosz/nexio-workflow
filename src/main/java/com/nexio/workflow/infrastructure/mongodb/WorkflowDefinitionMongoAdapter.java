@@ -1,5 +1,6 @@
 package com.nexio.workflow.infrastructure.mongodb;
 
+import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import java.util.List;
@@ -37,9 +38,15 @@ public class WorkflowDefinitionMongoAdapter implements WorkflowDefinitionPort {
         return repository.findById(id);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>O recorte do dominio vira um {@link OffsetPageable} aqui dentro: nenhum tipo do Spring
+     * Data aparece na assinatura da porta.</p>
+     */
     @Override
-    public List<WorkflowDefinition> findAll() {
-        return repository.findAll();
+    public List<WorkflowDefinition> findAll(PageQuery page) {
+        return repository.findAll(OffsetPageable.of(page)).getContent();
     }
 
     @Override
