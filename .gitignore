@@ -24,3 +24,6 @@ logs/
 
 # Docker
 docker-compose.override.yml
+
+# Claude Code local agent workspace
+.claude/
