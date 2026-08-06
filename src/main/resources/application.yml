@@ -5,6 +5,8 @@ spring:
   data:
     mongodb:
       uri: ${MONGODB_URI:mongodb://nexio:nexio@localhost:27017/nexio_workflow?authSource=admin}
+      # desde o Spring Data 3.0 o padrao e false: sem isto as anotacoes @CompoundIndex nao criam indice
+      auto-index-creation: true
 
   graphql:
     graphiql:
