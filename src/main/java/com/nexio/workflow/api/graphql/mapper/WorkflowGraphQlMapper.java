@@ -98,6 +98,11 @@ public final class WorkflowGraphQlMapper {
             nodes.add(new WorkflowNodeResponse(
                     node.nodeId(),
                     node.type(),
+                    node.url(),
+                    node.method(),
+                    node.headers(),
+                    node.body(),
+                    node.expression(),
                     node.config(),
                     node.nextOnSuccess(),
                     node.nextOnTrue(),
@@ -152,6 +157,11 @@ public final class WorkflowGraphQlMapper {
             nodes.add(new WorkflowNode(
                     input.id(),
                     input.type(),
+                    input.url(),
+                    input.method(),
+                    input.headers(),
+                    input.body(),
+                    input.expression(),
                     input.config(),
                     input.nextOnSuccess(),
                     input.nextOnTrue(),

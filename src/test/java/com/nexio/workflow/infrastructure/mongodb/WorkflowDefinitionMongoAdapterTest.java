@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import com.nexio.workflow.AbstractMongoIntegrationTest;
+import com.nexio.workflow.WriteValidationTestConfig;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
@@ -12,6 +13,7 @@ import com.nexio.workflow.domain.exception.WorkflowConcurrentlyModifiedException
 import com.nexio.workflow.domain.model.TriggerConfig;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.WorkflowNode;
+import com.nexio.workflow.domain.model.enums.HttpMethod;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.TriggerType;
 import com.nexio.workflow.infrastructure.config.MongoConfig;
@@ -38,6 +40,7 @@ import org.springframework.context.annotation.Import;
  */
 @DataMongoTest
 @Import({MongoConfig.class,
+        WriteValidationTestConfig.class,
         WorkflowDefinitionMongoAdapter.class,
         WorkflowDefinitionWriteValidationCallback.class})
 class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
@@ -145,8 +148,8 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
     void saveRejectsInvalidGraphThroughTheWriteCallback() {
         WorkflowDefinition definition = definition("wf-ciclo", "ciclica", true, TriggerType.MOCK_EVENT);
         definition.setNodes(List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
-                new WorkflowNode("check", NodeType.HTTP_REQUEST, Map.of(), "start", null, null)));
+                WorkflowNode.httpRequest("start", "https://exemplo.test", HttpMethod.GET, null, null, "check"),
+                WorkflowNode.httpRequest("check", "https://exemplo.test/c", HttpMethod.GET, null, null, "start")));
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> port.save(definition))
@@ -161,7 +164,8 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
     void saveRejectsOperatorKeysInNodeConfigThroughTheWriteCallback() {
         WorkflowDefinition definition = definition("wf-config", "config hostil", true, TriggerType.MOCK_EVENT);
         definition.setNodes(List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("$where", "1"), null, null, null)));
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of("$where", "1"), null, null, null)));
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> port.save(definition))
@@ -313,10 +317,11 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
         httpConfig.put("headers", headers);
 
         List<WorkflowNode> nodes = new ArrayList<>();
-        nodes.add(new WorkflowNode("start", NodeType.HTTP_REQUEST, httpConfig, "check", null, null));
-        nodes.add(new WorkflowNode("check", NodeType.CONDITION, Map.of("expr", "status == 200"),
-                null, "done", "done"));
-        nodes.add(new WorkflowNode("done", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+        nodes.add(WorkflowNode.httpRequest(
+                "start", "https://example.test/hook", HttpMethod.POST, headers, null, "check"));
+        nodes.add(WorkflowNode.condition("check", "status == 200", "done", "done"));
+        nodes.add(WorkflowNode.httpRequest(
+                "done", "https://example.test/done", HttpMethod.GET, null, null, null));
 
         WorkflowDefinition definition = new WorkflowDefinition();
         definition.setId(id);

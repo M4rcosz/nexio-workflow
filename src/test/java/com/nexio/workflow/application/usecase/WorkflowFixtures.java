@@ -3,6 +3,7 @@ package com.nexio.workflow.application.usecase;
 import com.nexio.workflow.domain.model.TriggerConfig;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.WorkflowNode;
+import com.nexio.workflow.domain.model.enums.HttpMethod;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.TriggerType;
 import java.time.Instant;
@@ -29,10 +30,8 @@ final class WorkflowFixtures {
      */
     static List<WorkflowNode> validNodes() {
         return List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("url", "https://exemplo.test"), "end",
-                        null, null),
-                new WorkflowNode("end", NodeType.HTTP_REQUEST, Map.of("url", "https://exemplo.test/fim"),
-                        null, null, null));
+                WorkflowNode.httpRequest("start", "https://exemplo.test", HttpMethod.GET, null, null, "end"),
+                WorkflowNode.httpRequest("end", "https://exemplo.test/fim", HttpMethod.GET, null, null, null));
     }
 
     /**
@@ -42,10 +41,8 @@ final class WorkflowFixtures {
      */
     static List<WorkflowNode> otherValidNodes() {
         return List.of(
-                new WorkflowNode("inicio", NodeType.HTTP_REQUEST, Map.of("url", "https://exemplo.test/inicio"),
-                        "fim", null, null),
-                new WorkflowNode("fim", NodeType.HTTP_REQUEST, Map.of("url", "https://exemplo.test/fim"),
-                        null, null, null));
+                WorkflowNode.httpRequest("inicio", "https://exemplo.test/inicio", HttpMethod.GET, null, null, "fim"),
+                WorkflowNode.httpRequest("fim", "https://exemplo.test/fim", HttpMethod.GET, null, null, null));
     }
 
     /**
@@ -55,8 +52,8 @@ final class WorkflowFixtures {
      */
     static List<WorkflowNode> cyclicNodes() {
         return List.of(
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), "b", null, null),
-                new WorkflowNode("b", NodeType.HTTP_REQUEST, Map.of(), "a", null, null));
+                WorkflowNode.httpRequest("a", "https://exemplo.test/a", HttpMethod.GET, null, null, "b"),
+                WorkflowNode.httpRequest("b", "https://exemplo.test/b", HttpMethod.GET, null, null, "a"));
     }
 
     /**
@@ -67,8 +64,9 @@ final class WorkflowFixtures {
      */
     static List<WorkflowNode> nodesWithOperatorKeyInConfig() {
         return List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("$where", "1"), "end", null, null),
-                new WorkflowNode("end", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of("$where", "1"), "end", null, null),
+                WorkflowNode.httpRequest("end", "https://exemplo.test/fim", HttpMethod.GET, null, null, null));
     }
 
     /**

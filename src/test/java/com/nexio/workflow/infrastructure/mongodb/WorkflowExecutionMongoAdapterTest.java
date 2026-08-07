@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.nexio.workflow.AbstractMongoIntegrationTest;
+import com.nexio.workflow.WriteValidationTestConfig;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
@@ -43,6 +44,7 @@ import org.springframework.data.mongodb.core.query.Update;
  */
 @DataMongoTest
 @Import({MongoConfig.class,
+        WriteValidationTestConfig.class,
         WorkflowExecutionMongoAdapter.class,
         WorkflowExecutionWriteValidationCallback.class})
 class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {

@@ -89,7 +89,8 @@ class UpdateWorkflowInputValidationTest {
                 ArgumentValue.omitted(),
                 ArgumentValue.omitted(),
                 ArgumentValue.ofNullable(List.of(
-                        new WorkflowNodeInput(" ", NodeType.HTTP_REQUEST, Map.of(), null, null, null))),
+                        new WorkflowNodeInput(" ", NodeType.HTTP_REQUEST, "https://exemplo.test",
+                                null, null, null, null, Map.of(), null, null, null))),
                 ArgumentValue.omitted(),
                 ArgumentValue.omitted());
 

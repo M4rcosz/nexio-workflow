@@ -54,13 +54,33 @@ type WorkflowNode {
   # id do no dentro do workflow; corresponde a WorkflowNode.nodeId no dominio
   id: String!
   type: NodeType!
-  # HTTP_REQUEST: { "url": "...", "method": "POST", "headers": {}, "body": {} }
-  # CONDITION:    { "expression": "total > 100" }
+
+  # Parametros dos nos HTTP_REQUEST. Sao campos declarados, e nao chaves dentro de `config`, pelo
+  # mesmo motivo das arestas logo abaixo: o que nao esta declarado, a validacao nao enxerga. Com
+  # `url` declarado o destino e validado contra SSRF na escrita, e nao so no disparo -- ver
+  # docs/adr/0003-typed-http-node-fields.md. Sao nulos nos nos CONDITION, que os recusam.
   #
-  # A config volta com os valores de chaves sensiveis (Authorization, api-key, token, secret,
-  # password, credential, cookie) substituidos por um marcador. A redacao vale so para a leitura:
-  # o que esta gravado continua intacto e e o que a execucao usa.
+  # `url` e `headers` voltam com os valores sensiveis mascarados: alem das chaves de nome sensivel
+  # (Authorization, api-key, token, secret, password, credential, cookie), o valor de `url` tem o
+  # userinfo e os parametros de consulta sensiveis mascarados, porque
+  # `https://api.exemplo.test/v1?api_key=...` entrega a credencial por dentro de um campo que
+  # nenhuma regra de nome pegaria. A redacao vale so para a leitura: o que esta gravado continua
+  # intacto e e o que a execucao usa.
+  url: String
+  method: HttpMethod
+  headers: JSON
+  body: JSON
+
+  # Condicao avaliada pelos nos CONDITION; nula nos demais, que a recusam. Declarada e nao guardada
+  # em `config` porque o dominio precisa valida-la na escrita, e nao valida o que nao ve --
+  # ver docs/adr/0002-spel-sandbox.md.
+  expression: String
+
+  # Sobra para o que e especifico do no e que o dominio nao precisa inspecionar. O criterio: se o
+  # dominio le o campo para validar ou proteger alguma coisa, ele e declarado acima; se e carga
+  # opaca repassada adiante, fica aqui.
   config: JSON!
+
   # As arestas do grafo sao campos de primeira classe, e nunca chaves dentro de `config`: a
   # validacao do grafo (ciclo, aresta orfa, alcancabilidade) so enxerga o que esta declarado aqui,
   # entao uma rota escondida no blob nao tipado passaria por um grafo "validado" carregando um
@@ -79,6 +99,18 @@ enum TriggerType {
 enum NodeType {
   HTTP_REQUEST
   CONDITION
+}
+
+# Verbo HTTP do no HTTP_REQUEST. A lista e fechada nos verbos que um passo de workflow precisa:
+# CONNECT, TRACE e OPTIONS ficam de fora, e CONNECT em particular transformaria o cliente de saida
+# em tunel, que e o que a validacao de destino existe para impedir.
+enum HttpMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+  HEAD
 }
 
 # Os dois enums abaixo nao sao referenciados por nenhum campo enquanto as operacoes de execucao
@@ -129,7 +161,19 @@ input WorkflowNodeInput {
   # id do no dentro do workflow; corresponde a WorkflowNode.nodeId no dominio
   id: String!
   type: NodeType!
-  config: JSON!
+
+  # HTTP_REQUEST exige `url` e recusa `expression`; CONDITION exige `expression` e recusa `url`,
+  # `method`, `headers` e `body`. A regra e simetrica de proposito: aceitar em silencio o campo que
+  # o tipo nao usa deixa o autor convencido de ter configurado algo que nunca sera lido.
+  url: String
+  method: HttpMethod
+  headers: JSON
+  body: JSON
+  expression: String
+
+  # Opcional: so o que o dominio nao precisa inspecionar. O padrao e um objeto vazio.
+  config: JSON = {}
+
   nextOnSuccess: String
   nextOnTrue: String
   nextOnFalse: String

@@ -155,7 +155,19 @@ public final class SecretRedactor {
      * consulta nao ha o que mascarar, e um texto que o {@link URI} nem consegue analisar volta como
      * veio.</p>
      */
-    private static String redactUrl(String value) {
+    /**
+     * Mascara as partes sensiveis de um endereco recebido solto, fora de um mapa.
+     *
+     * <p>E publico porque {@code url} deixou de ser uma chave dentro da config e virou campo
+     * declarado do no: o valor nao passa mais por {@link #redact(Map)} e precisaria de um caminho
+     * proprio. Sem ele, promover o campo teria aberto de volta o vazamento que a varredura de valor
+     * fechou.</p>
+     *
+     * @param value endereco a mascarar, pode ser nulo
+     * @return endereco com userinfo e parametros sensiveis mascarados, ou o proprio valor quando
+     *         nao e um URI
+     */
+    public static String redactUrl(String value) {
         URI uri;
         try {
             uri = new URI(value);

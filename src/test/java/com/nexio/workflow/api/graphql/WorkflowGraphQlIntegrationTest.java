@@ -58,7 +58,7 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 enabled
                 startNodeId
                 trigger { type config }
-                nodes { id type config nextOnSuccess nextOnTrue nextOnFalse }
+                nodes { id type url method headers body expression config nextOnSuccess nextOnTrue nextOnFalse }
                 createdAt
                 updatedAt
               }
@@ -74,7 +74,7 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 enabled
                 startNodeId
                 trigger { type }
-                nodes { id type config nextOnSuccess }
+                nodes { id type url headers config nextOnSuccess }
               }
             }
             """;
@@ -428,16 +428,106 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
         graphQlTester.document(READ_QUERY)
                 .variable("id", id)
                 .execute()
-                .path("workflow.nodes[0].config.headers.Authorization")
+                .path("workflow.nodes[0].headers.Authorization")
                 .entity(String.class).isEqualTo(SecretRedactor.REDACTED)
-                .path("workflow.nodes[0].config.headers['Content-Type']")
+                .path("workflow.nodes[0].headers['Content-Type']")
                 .entity(String.class).isEqualTo("application/json")
-                .path("workflow.nodes[0].config.url")
+                .path("workflow.nodes[0].url")
                 .entity(String.class).isEqualTo("https://exemplo.test");
 
         assertThat(storedHeadersOfFirstNode(id))
                 .containsEntry("Authorization", "Bearer super-secreto")
                 .containsEntry("Content-Type", "application/json");
+    }
+
+    /**
+     * Um destino interno literal e recusado na propria criacao do workflow.
+     *
+     * <p>Este e o ganho concreto de ter promovido {@code url} a campo declarado. O
+     * {@code HttpTargetValidator} existe e esta correto desde o Sprint 1, mas enquanto a URL morava
+     * dentro do mapa livre nao havia como a escrita chama-lo: a recusa so podia acontecer no
+     * disparo, quando quem escreveu o workflow ja foi embora e o erro vira incidente em vez de
+     * mensagem de formulario.</p>
+     *
+     * <p>O endereco escolhido e o do servico de metadados de nuvem, que e o alvo classico de SSRF.
+     * Sendo literal, ele e verificavel sem consultar DNS -- que e exatamente o recorte que a
+     * validacao de escrita aplica.</p>
+     */
+    @Test
+    void createWorkflowRejectsAnInternalLiteralTargetAsBadRequest() {
+        Map<String, Object> input = baseInput("alvo interno");
+        input.put("nodes", List.of(Map.of(
+                "id", "start",
+                "type", "HTTP_REQUEST",
+                "url", "http://169.254.169.254/latest/meta-data/")));
+
+        graphQlTester.document(CREATE_MUTATION)
+                .variable("input", input)
+                .execute()
+                .errors()
+                .satisfy(errors -> {
+                    assertThat(errors).hasSize(1);
+                    assertThat(errors.getFirst().getErrorType()).hasToString(ErrorType.BAD_REQUEST.name());
+                });
+
+        assertThat(definitions().countDocuments()).isZero();
+    }
+
+    /**
+     * Um no HTTP_REQUEST sem {@code url} e recusado, e um CONDITION sem {@code expression} tambem.
+     *
+     * <p>A regra e simetrica: cada tipo exige o que usa e recusa o que nao usa. Aceitar em silencio
+     * o campo que o tipo ignora produz o workflow que "esta certo" e nao faz nada.</p>
+     */
+    @Test
+    void createWorkflowRejectsNodesMissingTheParametersOfTheirType() {
+        Map<String, Object> semUrl = baseInput("http sem url");
+        semUrl.put("nodes", List.of(Map.of("id", "start", "type", "HTTP_REQUEST")));
+        assertCreateFailsWith(semUrl, "precisa definir url");
+
+        Map<String, Object> semExpressao = baseInput("condicao sem expressao");
+        semExpressao.put("nodes", List.of(
+                Map.of("id", "start", "type", "CONDITION", "nextOnTrue", "fim", "nextOnFalse", "fim"),
+                Map.of("id", "fim", "type", "HTTP_REQUEST", "url", "https://exemplo.test")));
+        assertCreateFailsWith(semExpressao, "precisa definir expression");
+
+        Map<String, Object> condicaoComUrl = baseInput("condicao com url");
+        condicaoComUrl.put("nodes", List.of(
+                Map.of("id", "start", "type", "CONDITION", "expression", "total > 100",
+                        "url", "https://exemplo.test", "nextOnTrue", "fim", "nextOnFalse", "fim"),
+                Map.of("id", "fim", "type", "HTTP_REQUEST", "url", "https://exemplo.test")));
+        assertCreateFailsWith(condicaoComUrl, "nao pode definir url");
+    }
+
+    /**
+     * Os campos promovidos sao gravados com o proprio nome, e nao dentro de {@code config}.
+     *
+     * <p>Trava a migracao de forma verificavel: se alguem reverter o mapeamento e voltar a empurrar
+     * {@code url} para dentro do blob, o documento cru denuncia.</p>
+     */
+    @Test
+    void promotedNodeFieldsArePersistedAsTheirOwnDocumentKeys() {
+        String id = createWorkflow(inputWithSecretHeader());
+
+        Document node = rawDefinition(id).getList("nodes", Document.class).getFirst();
+
+        assertThat(node.getString("url")).isEqualTo("https://exemplo.test");
+        assertThat(node.get("headers", Document.class))
+                .containsEntry("Authorization", "Bearer super-secreto");
+        assertThat(node.get("config", Document.class)).isEmpty();
+        assertThat(node).doesNotContainKey("expression");
+    }
+
+    private void assertCreateFailsWith(Map<String, Object> input, String expectedMessage) {
+        graphQlTester.document(CREATE_MUTATION)
+                .variable("input", input)
+                .execute()
+                .errors()
+                .satisfy(errors -> {
+                    assertThat(errors).hasSize(1);
+                    assertThat(errors.getFirst().getErrorType()).hasToString(ErrorType.BAD_REQUEST.name());
+                    assertThat(errors.getFirst().getMessage()).contains(expectedMessage);
+                });
     }
 
     /**
@@ -513,11 +603,10 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 .variable("nodes", List.of(Map.of(
                         "id", "start",
                         "type", "HTTP_REQUEST",
-                        "config", Map.of(
-                                "url", "https://exemplo.test",
-                                "headers", Map.of(
-                                        "Authorization", SecretRedactor.REDACTED,
-                                        "Content-Type", "application/json")))))
+                        "url", "https://exemplo.test",
+                        "headers", Map.of(
+                                "Authorization", SecretRedactor.REDACTED,
+                                "Content-Type", "application/json"))))
                 .execute()
                 .errors()
                 .satisfy(errors -> {
@@ -567,7 +656,7 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
 
     private Document storedHeadersOfFirstNode(String id) {
         List<Document> nodes = rawDefinition(id).getList("nodes", Document.class);
-        return nodes.getFirst().get("config", Document.class).get("headers", Document.class);
+        return nodes.getFirst().get("headers", Document.class);
     }
 
     private MongoCollection<Document> definitions() {
@@ -586,12 +675,12 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 Map.of(
                         "id", "start",
                         "type", "HTTP_REQUEST",
-                        "config", Map.of("url", "https://exemplo.test"),
+                        "url", "https://exemplo.test",
                         "nextOnSuccess", "end"),
                 Map.of(
                         "id", "end",
                         "type", "HTTP_REQUEST",
-                        "config", Map.of())));
+                        "url", "https://exemplo.test/fim")));
         return input;
     }
 
@@ -601,12 +690,12 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 Map.of(
                         "id", "start",
                         "type", "HTTP_REQUEST",
-                        "config", Map.of(),
+                        "url", "https://exemplo.test",
                         "nextOnSuccess", "end"),
                 Map.of(
                         "id", "end",
                         "type", "HTTP_REQUEST",
-                        "config", Map.of(),
+                        "url", "https://exemplo.test/fim",
                         "nextOnSuccess", "start")));
         return input;
     }
@@ -616,7 +705,7 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
         input.put("nodes", List.of(Map.of(
                 "id", "start",
                 "type", "HTTP_REQUEST",
-                "config", Map.of(),
+                "url", "https://exemplo.test",
                 "nextOnSuccess", "no-que-nao-existe")));
         return input;
     }
@@ -627,6 +716,7 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
         input.put("nodes", List.of(Map.of(
                 "id", "start",
                 "type", "HTTP_REQUEST",
+                "url", "https://exemplo.test",
                 "config", config)));
         return input;
     }
@@ -636,11 +726,10 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
         input.put("nodes", List.of(Map.of(
                 "id", "start",
                 "type", "HTTP_REQUEST",
-                "config", Map.of(
-                        "url", "https://exemplo.test",
-                        "headers", Map.of(
-                                "Authorization", "Bearer super-secreto",
-                                "Content-Type", "application/json")))));
+                "url", "https://exemplo.test",
+                "headers", Map.of(
+                        "Authorization", "Bearer super-secreto",
+                        "Content-Type", "application/json"))));
         return input;
     }
 

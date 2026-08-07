@@ -8,6 +8,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.UnknownHostException;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,6 +81,12 @@ public class HttpTargetValidator {
      *         uma constante e nao repete nada da entrada
      */
     public URI validate(String url) {
+        URI uri = validateSyntax(url);
+        validateAddresses(uri.getHost());
+        return uri;
+    }
+
+    private URI validateSyntax(String url) {
         if (url == null || url.isBlank()) {
             throw reject(Reason.MALFORMED_URL, "url nula ou em branco");
         }
@@ -119,9 +126,48 @@ public class HttpTargetValidator {
             throw reject(Reason.INVALID_PORT, "porta 0 em " + forLog(url));
         }
 
-        validateAddresses(host);
         return uri;
     }
+
+    /**
+     * Aplica as regras que nao dependem de rede, mais a checagem de endereco quando o host ja e um
+     * literal IP.
+     *
+     * <p>Existe para a validacao de escrita. O {@link #validate(String)} completo resolve DNS, e
+     * chamar aquilo no {@code createWorkflow} tornaria a criacao de workflow dependente de rede e
+     * transformaria todo host que nao resolve -- inclusive os nomes reservados que os proprios
+     * testes usam -- em erro de validacao. Aqui a resolucao so acontece quando nao ha resolucao a
+     * fazer: {@code http://169.254.169.254/} e recusado na escrita porque um literal nao precisa de
+     * consulta a DNS, enquanto {@code https://api.exemplo.com/} passa e e verificado no disparo.</p>
+     *
+     * <p>Isso <b>nao</b> enfraquece a protecao: a validacao completa no disparo continua sendo
+     * obrigatoria de qualquer forma, porque o endereco pode mudar entre a escrita e a execucao
+     * (DNS rebinding). O que a escrita faz e adiantar o que da para adiantar sem pagar uma consulta
+     * a DNS por save.</p>
+     *
+     * @param url endereco a validar
+     * @return URI ja validado sintaticamente
+     */
+    public URI validateWithoutResolving(String url) {
+        URI uri = validateSyntax(url);
+        String host = uri.getHost();
+        if (isIpLiteral(host)) {
+            validateAddresses(host);
+        }
+        return uri;
+    }
+
+    /**
+     * Informa se o host e um literal IP, e portanto verificavel sem consultar DNS.
+     *
+     * <p>O IPv6 chega entre colchetes vindo do {@link URI}, e o IPv4 e reconhecido pela forma
+     * numerica. Nome que nao case com nenhum dos dois exige resolucao e fica para o disparo.</p>
+     */
+    private static boolean isIpLiteral(String host) {
+        return host.startsWith("[") || IPV4_LITERAL.matcher(host).matches();
+    }
+
+    private static final Pattern IPV4_LITERAL = Pattern.compile("^\\d{1,3}(\\.\\d{1,3}){3}$");
 
     private void validateScheme(URI uri, String rawUrl) {
         String scheme = uri.getScheme();

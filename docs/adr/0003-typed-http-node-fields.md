@@ -77,9 +77,23 @@ Consequencias diretas:
   no individual. A alternativa -- `HttpRequestNode` e `ConditionNode` como uma uniao GraphQL -- e
   mais correta e bem mais cara, em schema, em mapeamento e na persistencia polimorfica. Fica
   registrada como o proximo passo se surgir um terceiro tipo de no.
-- A validacao de escrita passa a fazer resolucao de DNS (o `HttpTargetValidator` resolve o host).
-  Isso torna `createWorkflow` dependente de rede e mais lento, e um host inexistente vira erro de
-  validacao. Aceito: a alternativa e descobrir o destino invalido em producao.
+- **Correcao feita na implementacao (2026-08-07):** este ADR previa que a validacao de escrita
+  resolvesse DNS, e aceitava o custo. Na implementacao isso se mostrou caro pelo motivo errado:
+  torna `createWorkflow` dependente de rede, uma consulta a DNS por save, e transforma **todo nome
+  que nao resolve** em erro de validacao -- inclusive os nomes reservados (`*.test`) que os proprios
+  testes de integracao usam, o que tornaria a suite dependente de rede e de resolucao externa.
+
+  A escrita passou a usar `HttpTargetValidator.validateWithoutResolving(...)`, que aplica tudo que
+  nao depende de rede -- esquema, credencial embutida, fragmento, host ambiguo, porta 0 -- e faz a
+  checagem de endereco apenas quando o host **ja e um literal IP**, caso em que nao ha resolucao a
+  fazer. `http://169.254.169.254/` continua recusado na criacao; `https://api.exemplo.com/` passa e
+  e verificado no disparo.
+
+  Isso nao enfraquece a protecao, porque a validacao completa no disparo era obrigatoria de
+  qualquer forma pelo item seguinte: o endereco pode mudar entre a escrita e a execucao. O que se
+  perde e a recusa antecipada de um **nome** que aponta para endereco interno, que agora so aparece
+  no primeiro disparo -- degradado de "erro de formulario" para "primeira execucao falha", e nao
+  para "vulnerabilidade".
 - O DNS rebinding continua em aberto. Validar na escrita nao fecha o problema -- o endereco pode
   mudar entre a escrita e o disparo -- e por isso a validacao em tempo de execucao **permanece**,
   fixando a conexao no IP ja validado. A validacao na escrita e defesa em profundidade, nao

@@ -3,7 +3,7 @@ package com.nexio.workflow.api.graphql;
 import com.nexio.workflow.domain.model.TriggerConfig;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.WorkflowNode;
-import com.nexio.workflow.domain.model.enums.NodeType;
+import com.nexio.workflow.domain.model.enums.HttpMethod;
 import com.nexio.workflow.domain.model.enums.TriggerType;
 import java.time.Instant;
 import java.util.List;
@@ -31,10 +31,8 @@ final class GraphQlFixtures {
      */
     static WorkflowDefinition storedDefinition() {
         return storedDefinition(List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("url", "https://exemplo.test"),
-                        "end", null, null),
-                new WorkflowNode("end", NodeType.HTTP_REQUEST, Map.of("url", "https://exemplo.test/fim"),
-                        null, null, null)));
+                WorkflowNode.httpRequest("start", "https://exemplo.test", HttpMethod.GET, null, null, "end"),
+                WorkflowNode.httpRequest("end", "https://exemplo.test/fim", HttpMethod.GET, null, null, null)));
     }
 
     /**
@@ -44,13 +42,11 @@ final class GraphQlFixtures {
      */
     static WorkflowDefinition definitionWithSecretHeader() {
         return storedDefinition(List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST,
+                WorkflowNode.httpRequest("start", "https://exemplo.test", HttpMethod.GET,
                         Map.of(
-                                "url", "https://exemplo.test",
-                                "headers", Map.of(
-                                        "Authorization", "Bearer super-secreto",
-                                        "Content-Type", "application/json")),
-                        null, null, null)));
+                                "Authorization", "Bearer super-secreto",
+                                "Content-Type", "application/json"),
+                        null, null)));
     }
 
     private static WorkflowDefinition storedDefinition(List<WorkflowNode> nodes) {

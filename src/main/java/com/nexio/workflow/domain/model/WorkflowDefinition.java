@@ -45,6 +45,27 @@ public class WorkflowDefinition {
     /** Tamanho maximo de {@code startNodeId}, alinhado ao teto do proprio id de no. */
     public static final int MAX_NODE_ID_LENGTH = 64;
 
+    /**
+     * Tamanho maximo da URL de um no HTTP_REQUEST.
+     *
+     * <p>2048 e o limite pratico que navegadores e servidores adotam ha muito tempo; uma URL de
+     * workflow legitima fica ordens de grandeza abaixo disso. O teto existe declarado porque antes
+     * ele era acidental: a URL era um valor de string dentro de {@code config} e herdava o
+     * {@code MapSanitizer.MAX_STRING_LENGTH}, que nao foi escolhido pensando em endereco.</p>
+     */
+    public static final int MAX_URL_LENGTH = 2048;
+
+    /**
+     * Tamanho maximo da expressao de um no CONDITION.
+     *
+     * <p>Mesma historia da URL -- o limite era herdado por acidente -- mas aqui ele tambem e uma
+     * medida de contencao: a expressao vai ser avaliada por SpEL, e o custo de avaliacao cresce com
+     * o tamanho da expressao. Um teto baixo e a defesa mais barata contra expressao patologica, e
+     * 512 caracteres e muito mais do que uma condicao de workflow legivel precisa. Ver
+     * {@code docs/adr/0002-spel-sandbox.md}.</p>
+     */
+    public static final int MAX_EXPRESSION_LENGTH = 512;
+
     private static final Pattern NODE_ID_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
 
     private static final int COLOR_WHITE = 0;
@@ -242,6 +263,26 @@ public class WorkflowDefinition {
         validateAcyclic(byId);
         String effectiveStart = validateStartNode(byId);
         validateReachability(effectiveStart, byId);
+        validateNodeParameters();
+    }
+
+    /**
+     * Verifica que cada no traz os parametros do seu tipo e nenhum dos que nao usa.
+     *
+     * <p>Roda <b>depois</b> das checagens estruturais pelo mesmo motivo que a deteccao de ciclo roda
+     * antes da resolucao do no inicial: quando os dois problemas existem, o relatado deve ser a
+     * causa mais externa. Um grafo ciclico cujos nos tambem estao sem {@code url} tem dois defeitos,
+     * e "precisa definir url" manda o autor consertar o no enquanto o ciclo -- que invalida o
+     * desenho inteiro -- continua la.</p>
+     */
+    private void validateNodeParameters() {
+        for (WorkflowNode node : nodes) {
+            if (node.type() == NodeType.CONDITION) {
+                validateConditionParameters(node);
+            } else if (node.type() == NodeType.HTTP_REQUEST) {
+                validateHttpRequestParameters(node);
+            }
+        }
     }
 
     /**
@@ -260,6 +301,8 @@ public class WorkflowDefinition {
      */
     public void validateConfigs() {
         for (WorkflowNode node : nodes) {
+            MapSanitizer.validate(node.headers(), "nodes[" + node.nodeId() + "].headers");
+            MapSanitizer.validate(node.body(), "nodes[" + node.nodeId() + "].body");
             MapSanitizer.validate(node.config(), "nodes[" + node.nodeId() + "].config");
         }
         if (triggerConfig != null) {
@@ -320,6 +363,50 @@ public class WorkflowDefinition {
             throw new IllegalArgumentException(
                     "No '" + node.nodeId() + "' do tipo " + node.type()
                             + " nao pode definir nextOnTrue nem nextOnFalse");
+        }
+    }
+
+    private void validateConditionParameters(WorkflowNode node) {
+        if (node.expression() == null || node.expression().isBlank()) {
+            throw new IllegalArgumentException(
+                    "No CONDITION '" + node.nodeId() + "' precisa definir expression");
+        }
+        if (node.expression().length() > MAX_EXPRESSION_LENGTH) {
+            throw new IllegalArgumentException(
+                    "expression do no '" + node.nodeId() + "' excede "
+                            + MAX_EXPRESSION_LENGTH + " caracteres");
+        }
+        requireAbsent(node.url() == null, node, "url");
+        requireAbsent(node.method() == null, node, "method");
+        requireAbsent(node.headers().isEmpty(), node, "headers");
+        requireAbsent(node.body().isEmpty(), node, "body");
+    }
+
+    private void validateHttpRequestParameters(WorkflowNode node) {
+        if (node.url() == null || node.url().isBlank()) {
+            throw new IllegalArgumentException(
+                    "No HTTP_REQUEST '" + node.nodeId() + "' precisa definir url");
+        }
+        if (node.url().length() > MAX_URL_LENGTH) {
+            throw new IllegalArgumentException(
+                    "url do no '" + node.nodeId() + "' excede " + MAX_URL_LENGTH + " caracteres");
+        }
+        requireAbsent(node.expression() == null, node, "expression");
+    }
+
+    /**
+     * Recusa um parametro que nao pertence ao tipo do no.
+     *
+     * <p>A regra e simetrica de proposito -- o CONDITION recusa {@code url} tanto quanto o
+     * HTTP_REQUEST recusa {@code expression}. Aceitar em silencio o campo que o tipo nao usa deixa
+     * o autor convencido de ter configurado alguma coisa que nunca vai ser lida, e e assim que
+     * nasce o workflow que "esta certo" e nao faz nada.</p>
+     */
+    private void requireAbsent(boolean absent, WorkflowNode node, String field) {
+        if (!absent) {
+            throw new IllegalArgumentException(
+                    "No '" + node.nodeId() + "' do tipo " + node.type()
+                            + " nao pode definir " + field);
         }
     }
 

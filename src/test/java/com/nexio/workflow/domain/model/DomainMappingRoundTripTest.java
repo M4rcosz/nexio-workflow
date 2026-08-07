@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.nexio.workflow.AbstractMongoIntegrationTest;
+import com.nexio.workflow.WriteValidationTestConfig;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
+import com.nexio.workflow.domain.model.enums.HttpMethod;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.StepStatus;
 import com.nexio.workflow.domain.model.enums.TriggerType;
@@ -38,6 +40,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
  */
 @DataMongoTest
 @Import({MongoConfig.class,
+        WriteValidationTestConfig.class,
         WorkflowDefinitionWriteValidationCallback.class,
         WorkflowExecutionWriteValidationCallback.class})
 class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
@@ -274,8 +277,8 @@ class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
     void cyclicGraphCannotBePersisted() {
         WorkflowDefinition definition = sampleDefinition("wf-ciclico");
         definition.setNodes(List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
-                new WorkflowNode("check", NodeType.HTTP_REQUEST, Map.of(), "start", null, null)));
+                WorkflowNode.httpRequest("start", "https://exemplo.test", HttpMethod.GET, null, null, "check"),
+                WorkflowNode.httpRequest("check", "https://exemplo.test/c", HttpMethod.GET, null, null, "start")));
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> mongoTemplate.save(definition))
@@ -353,10 +356,11 @@ class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
         httpConfig.put("headers", headers);
 
         List<WorkflowNode> nodes = new ArrayList<>();
-        nodes.add(new WorkflowNode("start", NodeType.HTTP_REQUEST, httpConfig, "check", null, null));
-        nodes.add(new WorkflowNode("check", NodeType.CONDITION, Map.of("expr", "status == 200"),
-                null, "done", "done"));
-        nodes.add(new WorkflowNode("done", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+        nodes.add(WorkflowNode.httpRequest(
+                "start", "https://example.test/hook", HttpMethod.POST, headers, null, "check"));
+        nodes.add(WorkflowNode.condition("check", "status == 200", "done", "done"));
+        nodes.add(WorkflowNode.httpRequest(
+                "done", "https://example.test/done", HttpMethod.GET, null, null, null));
 
         WorkflowDefinition definition = new WorkflowDefinition();
         definition.setId(id);

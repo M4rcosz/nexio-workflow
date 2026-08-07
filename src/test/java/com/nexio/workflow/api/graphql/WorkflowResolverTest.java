@@ -64,7 +64,8 @@ class WorkflowResolverTest {
             }
             """;
 
-    private static final String READ_CONFIG_QUERY = "{ workflow(id: \"wf-1\") { nodes { config } } }";
+    private static final String READ_CONFIG_QUERY =
+            "{ workflow(id: \"wf-1\") { nodes { url headers config } } }";
 
     @MockitoBean
     private CreateWorkflowUseCase createWorkflowUseCase;
@@ -366,8 +367,13 @@ class WorkflowResolverTest {
     }
 
     /**
-     * D1: a config de um no volta com o segredo mascarado, inclusive dentro de {@code headers}, e o
-     * resto da config intacto.
+     * D1: os cabecalhos do no voltam com o segredo mascarado e o resto intacto.
+     *
+     * <p>Depois que {@code headers} virou campo declarado, ele deixou de estar dentro de
+     * {@code config} e passou a ter caminho proprio na resposta -- e caminho proprio no
+     * {@code WorkflowNodeResponse}, que e onde a redacao e aplicada. O teste segue o campo para
+     * onde ele foi: se apontasse para {@code config.headers}, passaria a consultar um caminho que
+     * nao existe mais e nao verificaria redacao nenhuma.</p>
      */
     @Test
     void redactsNestedAuthorizationHeaderOnRead() {
@@ -376,11 +382,11 @@ class WorkflowResolverTest {
 
         graphQlTester.document(READ_CONFIG_QUERY)
                 .execute()
-                .path("workflow.nodes[0].config.headers.Authorization")
+                .path("workflow.nodes[0].headers.Authorization")
                 .entity(String.class).isEqualTo(SecretRedactor.REDACTED)
-                .path("workflow.nodes[0].config.headers['Content-Type']")
+                .path("workflow.nodes[0].headers['Content-Type']")
                 .entity(String.class).isEqualTo("application/json")
-                .path("workflow.nodes[0].config.url")
+                .path("workflow.nodes[0].url")
                 .entity(String.class).isEqualTo("https://exemplo.test");
     }
 
@@ -392,15 +398,14 @@ class WorkflowResolverTest {
 
         graphQlTester.document(READ_CONFIG_QUERY)
                 .execute()
-                .path("workflow.nodes[0].config.headers.Authorization")
+                .path("workflow.nodes[0].headers.Authorization")
                 .entity(String.class).isEqualTo(SecretRedactor.REDACTED);
 
         assertThat(headersOfFirstNode(stored)).containsEntry("Authorization", "Bearer super-secreto");
     }
 
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> headersOfFirstNode(WorkflowDefinition definition) {
-        return (Map<String, Object>) definition.getNodes().getFirst().config().get("headers");
+        return definition.getNodes().getFirst().headers();
     }
 
     @Test

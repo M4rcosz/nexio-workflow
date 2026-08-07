@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
+import com.nexio.workflow.domain.model.enums.HttpMethod;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.StepStatus;
 import com.nexio.workflow.domain.model.enums.TriggerType;
@@ -46,7 +47,7 @@ class DomainInvariantsTest {
         hostile.put("weird key!!", 1);
         hostile.put("a.b", "ponto");
 
-        WorkflowNode node = new WorkflowNode("n1", NodeType.HTTP_REQUEST, hostile, null, null, null);
+        WorkflowNode node = new WorkflowNode("n1", NodeType.HTTP_REQUEST, null, null, null, null, null, hostile, null, null, null);
 
         assertThat(node.config())
                 .containsEntry("$where", "1")
@@ -109,7 +110,7 @@ class DomainInvariantsTest {
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("headers", headers);
 
-        WorkflowNode node = new WorkflowNode("n1", NodeType.HTTP_REQUEST, config, null, null, null);
+        WorkflowNode node = new WorkflowNode("n1", NodeType.HTTP_REQUEST, null, null, null, null, null, config, null, null, null);
         headers.put("x_trace", "mutado depois da copia");
 
         Map<?, ?> nestedCopy = (Map<?, ?>) node.config().get("headers");
@@ -269,9 +270,9 @@ class DomainInvariantsTest {
         assertThatNullPointerException()
                 .isThrownBy(() -> new TriggerConfig(null, Map.of()));
         assertThatNullPointerException()
-                .isThrownBy(() -> new WorkflowNode(null, NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                .isThrownBy(() -> new WorkflowNode(null, NodeType.HTTP_REQUEST, null, null, null, null, null, Map.of(), null, null, null));
         assertThatNullPointerException()
-                .isThrownBy(() -> new WorkflowNode("n1", null, Map.of(), null, null, null));
+                .isThrownBy(() -> new WorkflowNode("n1", null, null, null, null, null, null, Map.of(), null, null, null));
         assertThatNullPointerException()
                 .isThrownBy(() -> new ExecutionStep(null, StepStatus.SUCCESS, Map.of(), null, Instant.now()));
         assertThatNullPointerException()
@@ -442,18 +443,22 @@ class DomainInvariantsTest {
                 .withMessageContaining("ao menos um no");
 
         List<WorkflowNode> duplicated = List.of(
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), null, null, null),
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null),
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
         assertThatIllegalArgumentException().isThrownBy(definitionWith(duplicated, null)::validateGraph)
                 .withMessageContaining("duplicado");
 
         List<WorkflowNode> badId = List.of(
-                new WorkflowNode("a b", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("a b", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
         assertThatIllegalArgumentException().isThrownBy(definitionWith(badId, null)::validateGraph)
                 .withMessageContaining("Id de no invalido");
 
         List<WorkflowNode> dangling = List.of(
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), "ghost", null, null));
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "ghost", null, null));
         assertThatIllegalArgumentException().isThrownBy(definitionWith(dangling, null)::validateGraph)
                 .withMessageContaining("no inexistente");
 
@@ -465,15 +470,19 @@ class DomainInvariantsTest {
     @Test
     void shouldRejectConditionEdgeMismatch() {
         List<WorkflowNode> conditionWithoutBranches = List.of(
-                new WorkflowNode("c", NodeType.CONDITION, Map.of(), "d", null, null),
-                new WorkflowNode("d", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("c", NodeType.CONDITION, null, null, null, null,
+                        "total > 100", Map.of(), "d", null, null),
+                new WorkflowNode("d", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(conditionWithoutBranches, null)::validateGraph)
                 .withMessageContaining("nextOnTrue e nextOnFalse");
 
         List<WorkflowNode> httpWithBranches = List.of(
-                new WorkflowNode("h", NodeType.HTTP_REQUEST, Map.of(), null, "d", "d"),
-                new WorkflowNode("d", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("h", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, "d", "d"),
+                new WorkflowNode("d", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(httpWithBranches, null)::validateGraph)
                 .withMessageContaining("nao pode definir nextOnTrue");
@@ -482,15 +491,19 @@ class DomainInvariantsTest {
     @Test
     void shouldRejectCycles() {
         List<WorkflowNode> cycle = List.of(
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), "b", null, null),
-                new WorkflowNode("b", NodeType.HTTP_REQUEST, Map.of(), "c", null, null),
-                new WorkflowNode("c", NodeType.HTTP_REQUEST, Map.of(), "a", null, null));
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "b", null, null),
+                new WorkflowNode("b", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "c", null, null),
+                new WorkflowNode("c", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "a", null, null));
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(cycle, "a")::validateGraph)
                 .withMessageContaining("ciclo");
 
         List<WorkflowNode> selfLoop = List.of(
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), "a", null, null));
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "a", null, null));
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(selfLoop, "a")::validateGraph)
                 .withMessageContaining("ciclo");
@@ -504,8 +517,10 @@ class DomainInvariantsTest {
     @Test
     void shouldRejectNodesUnreachableFromTheStartNode() {
         List<WorkflowNode> withIsland = new ArrayList<>(validNodes());
-        withIsland.add(new WorkflowNode("ilha", NodeType.HTTP_REQUEST, Map.of(), "ilha2", null, null));
-        withIsland.add(new WorkflowNode("ilha2", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+        withIsland.add(new WorkflowNode("ilha", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "ilha2", null, null));
+        withIsland.add(new WorkflowNode("ilha2", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
 
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(withIsland, "start")::validateGraph)
@@ -522,8 +537,10 @@ class DomainInvariantsTest {
     @Test
     void shouldReportTheCycleWhenThereIsNoStartNodeAndTheGraphIsFullyCyclic() {
         List<WorkflowNode> cycle = List.of(
-                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), "b", null, null),
-                new WorkflowNode("b", NodeType.HTTP_REQUEST, Map.of(), "a", null, null));
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "b", null, null),
+                new WorkflowNode("b", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "a", null, null));
 
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(cycle, null)::validateGraph)
@@ -534,10 +551,14 @@ class DomainInvariantsTest {
     @Test
     void shouldAcceptDiamondShapedGraph() {
         List<WorkflowNode> diamond = List.of(
-                new WorkflowNode("a", NodeType.CONDITION, Map.of(), null, "b", "c"),
-                new WorkflowNode("b", NodeType.HTTP_REQUEST, Map.of(), "d", null, null),
-                new WorkflowNode("c", NodeType.HTTP_REQUEST, Map.of(), "d", null, null),
-                new WorkflowNode("d", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("a", NodeType.CONDITION, null, null, null, null,
+                        "total > 100", Map.of(), null, "b", "c"),
+                new WorkflowNode("b", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "d", null, null),
+                new WorkflowNode("c", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "d", null, null),
+                new WorkflowNode("d", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
         assertThatCode(definitionWith(diamond, "a")::validateGraph).doesNotThrowAnyException();
     }
 
@@ -549,7 +570,7 @@ class DomainInvariantsTest {
     void setNodesShouldEnforceTheNodeCap() {
         List<WorkflowNode> nodes = new ArrayList<>();
         for (int i = 0; i <= WorkflowDefinition.MAX_NODES; i++) {
-            nodes.add(new WorkflowNode("n" + i, NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+            nodes.add(WorkflowNode.httpRequest("n" + i, "https://exemplo.test", HttpMethod.GET, null, null, null));
         }
         WorkflowDefinition definition = new WorkflowDefinition();
 
@@ -561,9 +582,12 @@ class DomainInvariantsTest {
 
     private List<WorkflowNode> validNodes() {
         return List.of(
-                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
-                new WorkflowNode("check", NodeType.CONDITION, Map.of(), null, "done", "done"),
-                new WorkflowNode("done", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), "check", null, null),
+                new WorkflowNode("check", NodeType.CONDITION, null, null, null, null,
+                        "total > 100", Map.of(), null, "done", "done"),
+                new WorkflowNode("done", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
     }
 
     private WorkflowDefinition definitionWith(List<WorkflowNode> nodes, String startNodeId) {
