@@ -255,10 +255,7 @@ public class WorkflowDefinition {
      */
     public void validateGraph() {
         validateNodeIds();
-        Map<String, WorkflowNode> byId = new HashMap<>();
-        for (WorkflowNode node : nodes) {
-            byId.put(node.nodeId(), node);
-        }
+        Map<String, WorkflowNode> byId = indexById();
         validateEdges(byId);
         validateAcyclic(byId);
         String effectiveStart = validateStartNode(byId);
@@ -308,6 +305,37 @@ public class WorkflowDefinition {
         if (triggerConfig != null) {
             MapSanitizer.validate(triggerConfig.config(), "triggerConfig.config");
         }
+    }
+
+    /**
+     * Resolve o no por onde a execucao comeca, aplicando exatamente a regra de
+     * {@link #validateGraph()}.
+     *
+     * <p>E publico porque a engine precisa comecar a caminhada onde a validacao diz que o grafo
+     * comeca. A regra tem duas partes -- o {@code startNodeId} declarado tem precedencia e, sem
+     * ele, vale o unico no sem aresta de entrada --, e reimplementa-la na engine criaria duas
+     * fontes da mesma regra: no dia em que uma delas mudar, a engine passa a executar um workflow
+     * diferente do que a validacao aprovou, sem nada reclamar.</p>
+     *
+     * <p>Nao valida o resto do grafo de proposito: quem chama isto ja tem a definicao gravada, e
+     * recusar a execucao inteira por causa de uma regra que nasceu depois da gravacao seria pior
+     * do que executar o que da para executar. As invariantes estruturais continuam sendo garantidas
+     * na escrita.</p>
+     *
+     * @return identificador do no inicial efetivo
+     * @throws IllegalArgumentException quando o {@code startNodeId} nao corresponde a nenhum no ou
+     *         quando, sem ele, o grafo nao tem exatamente uma raiz
+     */
+    public String resolveStartNodeId() {
+        return validateStartNode(indexById());
+    }
+
+    private Map<String, WorkflowNode> indexById() {
+        Map<String, WorkflowNode> byId = new HashMap<>();
+        for (WorkflowNode node : nodes) {
+            byId.put(node.nodeId(), node);
+        }
+        return byId;
     }
 
     private void validateNodeIds() {

@@ -63,3 +63,19 @@ uma chamada termina, nao de que a execucao termina.
 - **Fila (SQS/Rabbit/outbox).** A resposta certa para volume e para nao perder disparo em queda de
   processo. Fora de escala para o projeto atual, e nada do que esta sendo decidido aqui impede
   adota-la depois: a fronteira e o caso de uso de disparo.
+
+## Correcao feita na implementacao (2026-08-07)
+
+**O teto de tempo nao limita a execucao: ele limita o inicio do proximo no.** A ADR fala em "teto de
+tempo total da execucao", o que sugere uma parede. Nao e o que a engine faz, nem o que ela pode
+fazer: nao ha como interromper um no que ja esta rodando sem matar a thread, e o unico limite de uma
+chamada em curso e o tempo limite por no do cliente HTTP.
+
+O que a engine verifica e o relogio **antes de comecar cada no**. Estourado o teto, ela para de
+avancar e marca `FAILED`. O pior caso real e, portanto, `teto + duracao de um no` -- hoje 30s + 10s.
+
+Isso esta escrito no Javadoc da engine e fixado por teste
+(`theCapNeverInterruptsANodeAlreadyRunning`), em vez de deixar o numero do `application.yml` passar
+a impressao de um limite que ele nao entrega. Quem precisar de parede de verdade tem que executar o
+no em outra thread e abandona-la no timeout, o que traz de volta a fronteira assincrona que esta ADR
+escolheu nao ter.

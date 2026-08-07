@@ -580,6 +580,38 @@ class DomainInvariantsTest {
         assertThat(definition.getNodes()).isEmpty();
     }
 
+    /**
+     * A resolucao do no inicial e publica porque a engine precisa dela, e precisa que seja
+     * exatamente a mesma que a validacao aplica: duas copias da regra fariam a engine executar, no
+     * primeiro ajuste, um workflow diferente do que a validacao aprovou.
+     */
+    @Test
+    void shouldResolveTheDeclaredStartNode() {
+        assertThat(definitionWith(validNodes(), "check").resolveStartNodeId()).isEqualTo("check");
+    }
+
+    /**
+     * Sem {@code startNodeId}, vale o unico no sem aresta de entrada -- e a ausencia de raiz unica e
+     * recusada em vez de resolvida por chute.
+     */
+    @Test
+    void shouldInferTheSingleRootWhenNoStartNodeIsDeclared() {
+        assertThat(definitionWith(validNodes(), null).resolveStartNodeId()).isEqualTo("start");
+
+        List<WorkflowNode> twoRoots = List.of(
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null),
+                new WorkflowNode("b", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,
+                        null, null, null, Map.of(), null, null, null));
+        assertThatIllegalArgumentException()
+                .isThrownBy(definitionWith(twoRoots, null)::resolveStartNodeId)
+                .withMessageContaining("exatamente um no sem aresta de entrada");
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(definitionWith(validNodes(), "fantasma")::resolveStartNodeId)
+                .withMessageContaining("startNodeId");
+    }
+
     private List<WorkflowNode> validNodes() {
         return List.of(
                 new WorkflowNode("start", NodeType.HTTP_REQUEST, "https://exemplo.test", HttpMethod.GET,

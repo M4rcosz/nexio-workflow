@@ -23,6 +23,12 @@ spring:
       locations: classpath:graphql/**/
 
 nexio:
+  engine:
+    # teto de tempo total de uma execucao, verificado antes de cada no. Os tempos limite do cliente
+    # HTTP sao por no e nao limitam a execucao em conjunto: um grafo de 50 nos somaria centenas de
+    # segundos dentro de um request sincrono. Precisa ser positivo e nao passa de 5m -- a ligacao
+    # das propriedades recusa o resto.
+    max-execution-duration: ${NEXIO_ENGINE_MAX_EXECUTION_DURATION:30s}
   http:
     # requisicoes de saida dos nos de workflow so podem usar https; http em texto claro fica
     # restrito a dev/teste, onde o alvo e um servico local

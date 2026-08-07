@@ -81,3 +81,38 @@ concorrencia importa.
   `MAX_STEPS` subir.
 - **`$push` cru, sem metodo de porta.** E a versao que traz o ganho sem pagar por ele: rapida de
   escrever e silenciosa quando alguem grava `output` nao validado.
+
+## Correcoes feitas na implementacao (2026-08-07)
+
+Quatro afirmacoes desta ADR nao sobreviveram ao contato com o codigo. Ficam corrigidas aqui, e nao
+reescritas acima, para que o raciocinio original continue legivel junto do que ele errou.
+
+**1. `$push` nao passa por fora do `@Version` -- ele incrementa a versao.** Esta era a premissa que
+sustentava o item 1 do contexto, e esta errada. O `updateFirst` do Spring Data adiciona um `$inc` na
+propriedade de versao de toda entidade versionada. A consequencia so aparece atravessando camadas, e
+e grave: depois de N passos o documento esta na versao N enquanto o agregado que a engine tem em
+memoria continua na versao com que nasceu, e a gravacao final do estado terminal -- que passa pelo
+bloqueio otimista -- e recusada. **Nenhuma execucao com um no sequer terminava.** A engine passou a
+reler a execucao antes da gravacao terminal.
+
+Vale registrar como o defeito escapou: os testes de unidade da engine usam porta falsa, e porta
+falsa nao incrementa versao. A suite inteira passava. E o mesmo buraco que a revisao de backend ja
+tinha apontado -- cada camada testada com a de baixo mockada nao pega o defeito que mora entre elas
+-- e a correcao veio junto com um `WorkflowEngineIntegrationTest` contra o Mongo real.
+
+**2. O ganho e de N gravacoes de documento inteiro, e nao de todas.** O texto acima sugere que o
+`appendStep` tira a reescrita do documento do caminho da execucao. Tira N delas; sobra uma, no fim,
+porque o estado terminal vai por `save` com `@Version` -- que e o que esta ADR queria. O custo deixa
+de ser quadratico e passa a ser linear mais uma reescrita, nao linear puro.
+
+**3. "Quem precisar do estado depois de acrescentar tem que reler" e verdade, mas insuficiente.**
+A engine tambem espelha cada passo aceito em memoria durante a caminhada, para contar passos sem ir
+ao banco a cada no. So entra no espelho o passo que a gravacao aceitou: se um passo recusado
+entrasse, a gravacao final do agregado seria recusada pelo mesmo motivo e a execucao ficaria presa
+em RUNNING.
+
+**4. O teto de passos nao virou "uma verificacao no adaptador".** Ele esta no *filtro* da
+atualizacao -- `steps.<MAX_STEPS - 1>` nao pode existir --, avaliado pelo servidor na mesma operacao
+atomica. Uma contagem previa reabriria exatamente a janela de concorrencia que o `$push` fecha. O
+efeito colateral e que um filtro que nao casa e ambiguo, e o caminho de erro paga uma consulta extra
+para distinguir "atingiu o teto" de "execucao nao existe".

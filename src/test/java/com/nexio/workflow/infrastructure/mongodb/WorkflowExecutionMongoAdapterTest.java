@@ -10,6 +10,7 @@ import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
 import com.nexio.workflow.domain.exception.WorkflowConcurrentlyModifiedException;
+import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import com.nexio.workflow.domain.model.ExecutionStep;
 import com.nexio.workflow.domain.model.WorkflowExecution;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
@@ -17,6 +18,7 @@ import com.nexio.workflow.domain.model.enums.StepStatus;
 import com.nexio.workflow.infrastructure.config.MongoConfig;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -313,6 +315,139 @@ class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {
                 .isThrownBy(() -> port.save(execution))
                 .withMessageContaining("'$'");
         assertThat(port.findById("exec-hostil")).isEmpty();
+    }
+
+    /**
+     * O teste que a {@code docs/adr/0004-execution-step-persistence.md} nomeia como condicao para a
+     * decisao valer.
+     *
+     * <p>O {@code $push} passa por fora do {@code BeforeConvertCallback}, que era a costura por onde
+     * toda escrita da execucao passava. Sem a validacao explicita dentro de {@code appendStep}, uma
+     * chave de operador chegaria gravada dentro de {@code steps[].output} -- e {@code output} e o
+     * corpo da resposta de um servico de terceiro, o dado menos confiavel que chega a gravacao neste
+     * projeto. Sem este teste, a ADR seria so uma intencao.</p>
+     */
+    @Test
+    void appendStepRejectsOperatorKeysInStepOutput() {
+        port.save(execution("exec-append-hostil", "wf-1", BASE));
+
+        ExecutionStep hostile = new ExecutionStep("no-http", StepStatus.SUCCESS,
+                Map.of("$where", "1"), null, BASE.plusSeconds(10));
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> port.appendStep("exec-append-hostil", hostile))
+                .withMessageContaining("'$'");
+
+        assertThat(port.findById("exec-append-hostil").orElseThrow().getSteps())
+                .extracting(ExecutionStep::nodeId)
+                .containsExactly("start");
+    }
+
+    /**
+     * A recusa vale em qualquer profundidade do {@code output}: um corpo de resposta aninhado e o
+     * caso normal, nao a excecao.
+     */
+    @Test
+    void appendStepRejectsOperatorKeysNestedInsideTheStepOutput() {
+        port.save(execution("exec-append-aninhado", "wf-1", BASE));
+
+        ExecutionStep hostile = new ExecutionStep("no-http", StepStatus.SUCCESS,
+                Map.of("body", Map.of("dados", List.of(Map.of("$ne", 1)))), null, BASE.plusSeconds(10));
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> port.appendStep("exec-append-aninhado", hostile))
+                .withMessageContaining("'$'");
+        assertThat(port.findById("exec-append-aninhado").orElseThrow().getSteps()).hasSize(1);
+    }
+
+    /**
+     * Responde se o acrescimo de passo reescreve o documento.
+     *
+     * <p>RESULTADO OBSERVADO: <b>nao</b>. Duas instancias lidas antes de qualquer acrescimo, dois
+     * acrescimos, e os dois passos sobrevivem -- porque o que vai ao servidor e um {@code $push} do
+     * elemento novo, e nao o array inteiro de uma copia que ja nasceu velha. E a diferenca
+     * exata para {@code secondSaveOfAStaleInstanceFailsWithTheDomainConflict}, logo acima, onde o
+     * mesmo roteiro por {@code save} derruba a segunda gravacao.</p>
+     *
+     * <p>A versao continua zero depois dos dois acrescimos, e isso tambem e o esperado: o
+     * {@code $push} nao passa pelo {@code @Version}. Para um array so de acrescimos e aceitavel --
+     * o {@code $push} e atomico no servidor e dois passos concorrentes nao se sobrescrevem --, e e
+     * justamente por isso que o {@code status} continua indo por {@code save}, onde o controle de
+     * concorrencia importa.</p>
+     */
+    @Test
+    void appendStepAddsOnlyTheNewElementSoConcurrentAppendsBothSurvive() {
+        port.save(execution("exec-append-concorrente", "wf-1", BASE));
+
+        WorkflowExecution first = port.findById("exec-append-concorrente").orElseThrow();
+        WorkflowExecution second = port.findById("exec-append-concorrente").orElseThrow();
+        assertThat(first.getVersion()).isZero();
+        assertThat(second.getVersion()).isZero();
+
+        port.appendStep(first.getId(),
+                new ExecutionStep("primeiro", StepStatus.SUCCESS, Map.of("statusCode", 200), null, BASE.plusSeconds(10)));
+        port.appendStep(second.getId(),
+                new ExecutionStep("segundo", StepStatus.SUCCESS, Map.of("statusCode", 204), null, BASE.plusSeconds(20)));
+
+        WorkflowExecution persisted = port.findById("exec-append-concorrente").orElseThrow();
+        assertThat(persisted.getSteps())
+                .extracting(ExecutionStep::nodeId)
+                .containsExactly("start", "primeiro", "segundo");
+        assertThat(persisted.getSteps().get(2).output()).containsEntry("statusCode", 204);
+        // A versao vai a 2, e nao fica em 0: o updateFirst do Spring Data incrementa a @Version de
+        // toda entidade versionada, entao o $push NAO passa por fora do bloqueio otimista como a
+        // ADR 0004 supunha. O que o $push preserva e o resto do documento -- nenhum dos dois
+        // agregados lidos na versao 0 sobrescreve o passo do outro --, e e isso que este teste
+        // afirma. A consequencia do incremento vive na engine, que precisa reler antes de gravar o
+        // estado terminal.
+        assertThat(persisted.getVersion()).isEqualTo(2L);
+        assertThat(persisted.getStatus()).isEqualTo(ExecutionStatus.SUCCESS);
+        assertThat(persisted.getTriggerPayload()).containsEntry("orderId", 42);
+    }
+
+    /**
+     * O teto de passos deixou de ser garantido pelo agregado no momento da montagem e passou a
+     * depender desta verificacao no adaptador -- a ADR registra que e um lugar pior para uma
+     * invariante de dominio e por que o preco vale a pena.
+     *
+     * <p>A checagem vai no filtro da propria atualizacao ({@code steps.199} nao pode existir), e nao
+     * numa contagem previa: contar antes e empurrar depois deixaria a janela em que dois acrescimos
+     * concorrentes leem a mesma contagem e ambos passam.</p>
+     */
+    @Test
+    void appendStepStopsAtTheStepCeiling() {
+        WorkflowExecution execution = pendingExecution("exec-append-teto", "wf-1");
+        execution.markRunning(BASE);
+        List<ExecutionStep> full = new ArrayList<>();
+        for (int i = 0; i < WorkflowExecution.MAX_STEPS; i++) {
+            full.add(new ExecutionStep("no-" + i, StepStatus.SUCCESS, Map.of(), null, BASE));
+        }
+        execution.setSteps(full);
+        port.save(execution);
+
+        ExecutionStep excedente = new ExecutionStep("no-excedente", StepStatus.SUCCESS, Map.of(), null, BASE);
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> port.appendStep("exec-append-teto", excedente))
+                .withMessageContaining(String.valueOf(WorkflowExecution.MAX_STEPS));
+
+        assertThat(port.findById("exec-append-teto").orElseThrow().getSteps())
+                .hasSize(WorkflowExecution.MAX_STEPS);
+    }
+
+    /**
+     * Documento inexistente e execucao apagada no meio do caminho -- a remocao em cascata de uma
+     * definicao faz isso. Sai como "nao encontrado" e nao como falha de validacao porque nao ha nada
+     * de errado com o passo, e porque marcar a execucao como FAILED, que e o que a engine faz diante
+     * de uma recusa de validacao, e exatamente o que nao da para fazer com um documento que sumiu.
+     */
+    @Test
+    void appendStepOnAnUnknownExecutionFailsAsNotFound() {
+        ExecutionStep step = new ExecutionStep("no-http", StepStatus.SUCCESS, Map.of(), null, BASE);
+
+        assertThatExceptionOfType(WorkflowNotFoundException.class)
+                .isThrownBy(() -> port.appendStep("exec-que-nunca-existiu", step))
+                .satisfies(error -> assertThat(error.workflowId()).isEqualTo("exec-que-nunca-existiu"));
     }
 
     @Test

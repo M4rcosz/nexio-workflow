@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.port.out;
 
+import com.nexio.workflow.domain.model.ExecutionStep;
 import com.nexio.workflow.domain.model.WorkflowExecution;
 import java.util.List;
 import java.util.Optional;
@@ -19,6 +20,33 @@ public interface WorkflowExecutionPort {
      * @return a execucao persistida, com versao atualizada
      */
     WorkflowExecution save(WorkflowExecution execution);
+
+    /**
+     * Acrescenta um passo a uma execucao ja gravada, sem reescrever o restante do documento.
+     *
+     * <p>Existe como metodo proprio porque a alternativa -- {@code execution.addStep(...)} seguido
+     * de {@code save} a cada no -- reescreve o documento inteiro, inclusive todos os passos
+     * anteriores, uma vez por no: o custo e quadratico no numero de nos. Ver
+     * {@code docs/adr/0004-execution-step-persistence.md}.</p>
+     *
+     * <p><b>A implementacao e obrigada a validar o passo antes de grava-lo</b>, aplicando a politica
+     * estrita de {@code MapSanitizer} sobre o {@code output} e o teto de
+     * {@code WorkflowExecution.MAX_STEPS}. Nao e detalhe de implementacao: e o preco de nao passar
+     * pelo caminho de {@code save}, que era o unico ponto por onde toda escrita da execucao passava.
+     * O {@code output} de um passo e a resposta de um servico de terceiro, o dado menos confiavel
+     * que chega a gravacao neste projeto.</p>
+     *
+     * <p>Nao devolve a execucao atualizada de proposito: devolver o documento reescrito traria de
+     * volta o custo que este metodo existe para evitar. Quem precisa do estado depois releia.</p>
+     *
+     * @param executionId identificador da execucao
+     * @param step        passo a acrescentar
+     * @throws com.nexio.workflow.domain.exception.InvalidWorkflowException quando o passo viola a
+     *         politica de escrita ou quando a execucao ja atingiu o teto de passos
+     * @throws com.nexio.workflow.domain.exception.WorkflowNotFoundException quando nao existe
+     *         execucao com esse identificador
+     */
+    void appendStep(String executionId, ExecutionStep step);
 
     /**
      * Busca uma execucao pelo identificador.
