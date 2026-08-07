@@ -7,6 +7,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.usecase.command.UpdateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
@@ -30,6 +31,8 @@ class UpdateWorkflowUseCaseTest {
 
     private static final String ID = "wf-1";
 
+    private static final ActorId ACTOR = new ActorId("ator-do-teste");
+
     @Mock
     private WorkflowDefinitionPort port;
 
@@ -49,7 +52,7 @@ class UpdateWorkflowUseCaseTest {
         when(port.findById(ID)).thenReturn(Optional.of(stored));
         when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        useCase.execute(ID, UpdateWorkflowCommand.builder().name("novo nome").enabled(false).build());
+        useCase.execute(ACTOR, ID, UpdateWorkflowCommand.builder().name("novo nome").enabled(false).build());
 
         verify(port).save(saved.capture());
         WorkflowDefinition captured = saved.getValue();
@@ -70,7 +73,7 @@ class UpdateWorkflowUseCaseTest {
         when(port.findById(ID)).thenReturn(Optional.of(stored));
         when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        useCase.execute(ID, UpdateWorkflowCommand.builder().description(null).build());
+        useCase.execute(ACTOR, ID, UpdateWorkflowCommand.builder().description(null).build());
 
         verify(port).save(saved.capture());
         assertThat(saved.getValue().getDescription()).isNull();
@@ -88,7 +91,7 @@ class UpdateWorkflowUseCaseTest {
         when(port.findById(ID)).thenReturn(Optional.of(stored));
         when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        useCase.execute(ID, UpdateWorkflowCommand.builder().name("outro").build());
+        useCase.execute(ACTOR, ID, UpdateWorkflowCommand.builder().name("outro").build());
 
         verify(port).save(saved.capture());
         assertThat(saved.getValue()).isSameAs(stored);
@@ -106,7 +109,7 @@ class UpdateWorkflowUseCaseTest {
         when(port.findById(ID)).thenReturn(Optional.of(stored));
         when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        useCase.execute(ID, UpdateWorkflowCommand.builder()
+        useCase.execute(ACTOR, ID, UpdateWorkflowCommand.builder()
                 .nodes(WorkflowFixtures.otherValidNodes())
                 .startNodeId("inicio")
                 .build());
@@ -121,7 +124,7 @@ class UpdateWorkflowUseCaseTest {
         when(port.findById(ID)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(WorkflowNotFoundException.class)
-                .isThrownBy(() -> useCase.execute(ID, UpdateWorkflowCommand.builder().name("x").build()))
+                .isThrownBy(() -> useCase.execute(ACTOR, ID, UpdateWorkflowCommand.builder().name("x").build()))
                 .matches(e -> ID.equals(e.workflowId()));
 
         verify(port, never()).save(any());
@@ -137,7 +140,7 @@ class UpdateWorkflowUseCaseTest {
                 .build();
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(ID, command))
+                .isThrownBy(() -> useCase.execute(ACTOR, ID, command))
                 .withMessageContaining("ciclo")
                 .withCauseInstanceOf(IllegalArgumentException.class);
 
@@ -158,7 +161,7 @@ class UpdateWorkflowUseCaseTest {
                 .build();
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(ID, command))
+                .isThrownBy(() -> useCase.execute(ACTOR, ID, command))
                 .withMessageContaining("'$'")
                 .withCauseInstanceOf(IllegalArgumentException.class);
 
@@ -171,7 +174,7 @@ class UpdateWorkflowUseCaseTest {
         String tooLong = "d".repeat(WorkflowDefinition.MAX_DESCRIPTION_LENGTH + 1);
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(ID, UpdateWorkflowCommand.builder()
+                .isThrownBy(() -> useCase.execute(ACTOR, ID, UpdateWorkflowCommand.builder()
                         .description(tooLong)
                         .build()))
                 .withMessageContaining("description");

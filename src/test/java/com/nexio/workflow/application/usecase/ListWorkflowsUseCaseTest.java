@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
@@ -34,6 +35,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 class ListWorkflowsUseCaseTest {
 
+    private static final ActorId ACTOR = new ActorId("ator-do-teste");
+
     @Mock
     private WorkflowDefinitionPort port;
 
@@ -56,7 +59,7 @@ class ListWorkflowsUseCaseTest {
         List<WorkflowDefinition> expected = definitions(3);
         when(port.findAll(requested)).thenReturn(expected);
 
-        assertThat(useCase.execute(requested, false)).isEqualTo(expected);
+        assertThat(useCase.execute(ACTOR, requested, false)).isEqualTo(expected);
 
         verify(port).findAll(page.capture());
         assertThat(page.getValue().limit()).isEqualTo(5);
@@ -77,7 +80,7 @@ class ListWorkflowsUseCaseTest {
         List<WorkflowDefinition> expected = definitions(3);
         when(port.findEnabled(requested)).thenReturn(expected);
 
-        assertThat(useCase.execute(requested, true)).isEqualTo(expected);
+        assertThat(useCase.execute(ACTOR, requested, true)).isEqualTo(expected);
 
         verify(port).findEnabled(page.capture());
         assertThat(page.getValue().limit()).isEqualTo(3);
@@ -96,14 +99,14 @@ class ListWorkflowsUseCaseTest {
         List<WorkflowDefinition> fromPort = definitions(10);
         when(port.findEnabled(any())).thenReturn(fromPort);
 
-        assertThat(useCase.execute(new PageQuery(3, 0), true)).isEqualTo(fromPort);
+        assertThat(useCase.execute(ACTOR, new PageQuery(3, 0), true)).isEqualTo(fromPort);
     }
 
     @Test
     void returnsEmptyWhenThePortHasNothingInThePage() {
         when(port.findEnabled(any())).thenReturn(List.of());
 
-        assertThat(useCase.execute(new PageQuery(10, 50), true)).isEmpty();
+        assertThat(useCase.execute(ACTOR, new PageQuery(10, 50), true)).isEmpty();
     }
 
     private List<WorkflowDefinition> definitions(int count) {

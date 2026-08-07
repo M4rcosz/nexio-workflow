@@ -9,6 +9,7 @@ import com.nexio.workflow.application.usecase.ListWorkflowsUseCase;
 import com.nexio.workflow.application.usecase.UpdateWorkflowUseCase;
 import com.nexio.workflow.infrastructure.config.GraphQLScalarsConfig;
 import com.nexio.workflow.infrastructure.config.GraphQlQueryCostConfig;
+import com.nexio.workflow.infrastructure.security.AnonymousActorProvider;
 import graphql.introspection.IntrospectionQuery;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -29,9 +30,14 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
  * funda que este servico recebe na pratica -- mais funda que qualquer consulta de negocio do schema
  * atual -- e um teto de profundidade escolhido no olho a quebraria em silencio, derrubando o
  * GraphiQL e qualquer cliente que baixe o esquema.</p>
+ *
+ * <p>O {@code AnonymousActorProvider} entra por {@code @Import} pelo mesmo motivo dos scalars: a
+ * fatia {@code @GraphQlTest} nao carrega {@code @Component}, e sem ele o resolver -- que agora
+ * recebe a porta do ator por construtor -- nao teria como ser instanciado. Aqui vale o provedor
+ * real: nada nestes testes olha o ator, e um duble so acrescentaria ruido.</p>
  */
 @GraphQlTest(WorkflowResolver.class)
-@Import({GraphQLScalarsConfig.class, GraphQlQueryCostConfig.class})
+@Import({GraphQLScalarsConfig.class, GraphQlQueryCostConfig.class, AnonymousActorProvider.class})
 class GraphQlSchemaTest {
 
     @MockitoBean

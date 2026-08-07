@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.usecase;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.usecase.command.UpdateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
@@ -49,13 +50,15 @@ public class UpdateWorkflowUseCase {
     /**
      * Aplica uma atualizacao parcial sobre a definicao existente.
      *
+     * @param actor   autor da operacao, obtido da infraestrutura e nunca da entrada do cliente
      * @param id      identificador da definicao a atualizar
      * @param command campos a alterar; o que nao foi enviado permanece como esta
      * @return a definicao persistida, com {@code updatedAt} e versao renovados
      * @throws WorkflowNotFoundException quando nao existe definicao com o identificador
      * @throws InvalidWorkflowException  quando o resultado da atualizacao viola alguma invariante
      */
-    public WorkflowDefinition execute(String id, UpdateWorkflowCommand command) {
+    public WorkflowDefinition execute(ActorId actor, String id, UpdateWorkflowCommand command) {
+        Objects.requireNonNull(actor, "actor nao pode ser nulo");
         Objects.requireNonNull(id, "id nao pode ser nulo");
         Objects.requireNonNull(command, "command nao pode ser nulo");
         WorkflowDefinition definition = workflowDefinitionPort.findById(id)

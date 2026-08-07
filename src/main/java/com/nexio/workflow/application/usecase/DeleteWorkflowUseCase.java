@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.usecase;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
@@ -67,10 +68,12 @@ public class DeleteWorkflowUseCase {
      * pedido cujo efeito principal aconteceu levaria o cliente a repetir a remocao e receber
      * {@code NOT_FOUND}. O que fica e o registro em WARN.</p>
      *
-     * @param id identificador da definicao
+     * @param actor autor da operacao, obtido da infraestrutura e nunca da entrada do cliente
+     * @param id    identificador da definicao
      * @throws WorkflowNotFoundException quando nao existia definicao com o identificador
      */
-    public void execute(String id) {
+    public void execute(ActorId actor, String id) {
+        Objects.requireNonNull(actor, "actor nao pode ser nulo");
         Objects.requireNonNull(id, "id nao pode ser nulo");
         if (!workflowDefinitionPort.deleteById(id)) {
             throw new WorkflowNotFoundException(id);

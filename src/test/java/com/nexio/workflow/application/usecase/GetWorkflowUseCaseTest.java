@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
@@ -24,6 +25,8 @@ class GetWorkflowUseCaseTest {
 
     private static final String ID = "wf-1";
 
+    private static final ActorId ACTOR = new ActorId("ator-do-teste");
+
     @Mock
     private WorkflowDefinitionPort port;
 
@@ -39,7 +42,7 @@ class GetWorkflowUseCaseTest {
         WorkflowDefinition stored = WorkflowFixtures.storedDefinition(ID);
         when(port.findById(ID)).thenReturn(Optional.of(stored));
 
-        assertThat(useCase.execute(ID)).isSameAs(stored);
+        assertThat(useCase.execute(ACTOR, ID)).isSameAs(stored);
 
         verify(port).findById(ID);
         verifyNoMoreInteractions(port);
@@ -54,7 +57,7 @@ class GetWorkflowUseCaseTest {
         when(port.findById(ID)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(WorkflowNotFoundException.class)
-                .isThrownBy(() -> useCase.execute(ID))
+                .isThrownBy(() -> useCase.execute(ACTOR, ID))
                 .matches(e -> ID.equals(e.workflowId()))
                 .withMessageContaining(ID);
     }

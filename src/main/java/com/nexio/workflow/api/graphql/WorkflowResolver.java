@@ -4,6 +4,8 @@ import com.nexio.workflow.api.graphql.dto.CreateWorkflowInput;
 import com.nexio.workflow.api.graphql.dto.UpdateWorkflowInput;
 import com.nexio.workflow.api.graphql.dto.WorkflowDefinitionResponse;
 import com.nexio.workflow.api.graphql.mapper.WorkflowGraphQlMapper;
+import com.nexio.workflow.application.port.out.ActorId;
+import com.nexio.workflow.application.port.out.CurrentActorPort;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.usecase.CreateWorkflowUseCase;
 import com.nexio.workflow.application.usecase.DeleteWorkflowUseCase;
@@ -40,6 +42,13 @@ import org.springframework.stereotype.Controller;
  * ha {@code @Validated} na classe de proposito: ele faria o Spring criar um proxy para validar de
  * novo o que ja seria validado aqui.</p>
  *
+ * <p><b>O ator nao e um argumento.</b> Ele vem de {@link CurrentActorPort}, injetado por
+ * construtor, e nenhum metodo desta classe le identidade de {@code @Argument}, de campo de input ou
+ * de cabecalho. A regra e a licao da {@code docs/adr/0001-no-multi-tenancy.md}: identificador de
+ * quem pede escolhido por quem pede nao isola nada -- e um seletor de dados alheios com nome de
+ * identidade. Como o schema nao tem campo algum para isso, nem o cliente mais criativo tem por onde
+ * tentar; se um dia tiver, o defeito estara em ter acrescentado o campo, nao aqui.</p>
+ *
  * <p>{@code limit} e {@code offset} chegam como {@code Integer} e nao como {@code int}: o schema ja
  * da valor padrao, mas o cliente pode enviar {@code limit: null} explicitamente, e um nulo
  * vinculado a primitivo estoura na vinculacao, antes de qualquer validacao, com um erro que nao diz
@@ -73,6 +82,7 @@ public class WorkflowResolver {
     private final DeleteWorkflowUseCase deleteWorkflowUseCase;
     private final GetWorkflowUseCase getWorkflowUseCase;
     private final ListWorkflowsUseCase listWorkflowsUseCase;
+    private final CurrentActorPort currentActorPort;
 
     /**
      * Cria o resolver com injecao por construtor.
@@ -82,18 +92,21 @@ public class WorkflowResolver {
      * @param deleteWorkflowUseCase caso de uso de remocao
      * @param getWorkflowUseCase    caso de uso de consulta por identificador
      * @param listWorkflowsUseCase  caso de uso de listagem
+     * @param currentActorPort      porta que informa o ator da requisicao em curso
      */
     public WorkflowResolver(
             CreateWorkflowUseCase createWorkflowUseCase,
             UpdateWorkflowUseCase updateWorkflowUseCase,
             DeleteWorkflowUseCase deleteWorkflowUseCase,
             GetWorkflowUseCase getWorkflowUseCase,
-            ListWorkflowsUseCase listWorkflowsUseCase) {
+            ListWorkflowsUseCase listWorkflowsUseCase,
+            CurrentActorPort currentActorPort) {
         this.createWorkflowUseCase = createWorkflowUseCase;
         this.updateWorkflowUseCase = updateWorkflowUseCase;
         this.deleteWorkflowUseCase = deleteWorkflowUseCase;
         this.getWorkflowUseCase = getWorkflowUseCase;
         this.listWorkflowsUseCase = listWorkflowsUseCase;
+        this.currentActorPort = currentActorPort;
     }
 
     /**
@@ -113,7 +126,7 @@ public class WorkflowResolver {
                 limit == null ? PageQuery.DEFAULT_LIMIT : limit,
                 offset == null ? 0 : offset);
         return WorkflowGraphQlMapper.toResponses(
-                listWorkflowsUseCase.execute(page, Boolean.TRUE.equals(enabledOnly)));
+                listWorkflowsUseCase.execute(actor(), page, Boolean.TRUE.equals(enabledOnly)));
     }
 
     /**
@@ -124,7 +137,7 @@ public class WorkflowResolver {
      */
     @QueryMapping
     public WorkflowDefinitionResponse workflow(@Argument @NotBlank @Size(max = MAX_ID_LENGTH) String id) {
-        return WorkflowGraphQlMapper.toResponse(getWorkflowUseCase.execute(id));
+        return WorkflowGraphQlMapper.toResponse(getWorkflowUseCase.execute(actor(), id));
     }
 
     /**
@@ -136,7 +149,7 @@ public class WorkflowResolver {
     @MutationMapping
     public WorkflowDefinitionResponse createWorkflow(@Argument @Valid CreateWorkflowInput input) {
         CreateWorkflowCommand command = translate(() -> WorkflowGraphQlMapper.toCommand(input));
-        return WorkflowGraphQlMapper.toResponse(createWorkflowUseCase.execute(command));
+        return WorkflowGraphQlMapper.toResponse(createWorkflowUseCase.execute(actor(), command));
     }
 
     /**
@@ -151,7 +164,7 @@ public class WorkflowResolver {
             @Argument @NotBlank @Size(max = MAX_ID_LENGTH) String id,
             @Argument @Valid UpdateWorkflowInput input) {
         UpdateWorkflowCommand command = translate(() -> WorkflowGraphQlMapper.toCommand(input));
-        return WorkflowGraphQlMapper.toResponse(updateWorkflowUseCase.execute(id, command));
+        return WorkflowGraphQlMapper.toResponse(updateWorkflowUseCase.execute(actor(), id, command));
     }
 
     /**
@@ -190,7 +203,7 @@ public class WorkflowResolver {
      */
     @MutationMapping
     public boolean deleteWorkflow(@Argument @NotBlank @Size(max = MAX_ID_LENGTH) String id) {
-        deleteWorkflowUseCase.execute(id);
+        deleteWorkflowUseCase.execute(actor(), id);
         return true;
     }
 
@@ -218,6 +231,19 @@ public class WorkflowResolver {
 
     private WorkflowDefinitionResponse setEnabled(String id, boolean enabled) {
         UpdateWorkflowCommand command = UpdateWorkflowCommand.builder().enabled(enabled).build();
-        return WorkflowGraphQlMapper.toResponse(updateWorkflowUseCase.execute(id, command));
+        return WorkflowGraphQlMapper.toResponse(updateWorkflowUseCase.execute(actor(), id, command));
+    }
+
+    /**
+     * Devolve o ator da requisicao em curso.
+     *
+     * <p>Metodo privado e sem parametro de proposito: nao ha o que passar para ele, entao nao ha
+     * como um valor vindo da requisicao alterar o resultado. Toda operacao publica desta classe
+     * passa por aqui, e este e o unico ponto da camada de API que produz um {@link ActorId}.</p>
+     *
+     * @return identificador do ator, hoje sempre {@link ActorId#ANONYMOUS}
+     */
+    private ActorId actor() {
+        return currentActorPort.currentActor();
     }
 }

@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.usecase;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.usecase.command.CreateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
@@ -30,6 +31,14 @@ import org.springframework.stereotype.Service;
  * todo save -- inclusive de um caso de uso futuro que esqueca de validar --, e nao como a
  * verificacao principal.</p>
  *
+ * <p><b>O {@link ActorId} e parametro explicito, e hoje nenhuma linha deste metodo o le.</b> Ele nao
+ * autoriza nada: a autorizacao chega no Sprint 4, com {@code ownerId} no agregado e consultas com
+ * escopo. O que existe aqui e a costura, feita antes porque cada caso de uso novo encarece a mesma
+ * mudanca de assinatura, e feita como parametro -- e nao como detentor injetado -- para que a
+ * dependencia apareca na assinatura e o caso de uso continue testavel sem contexto de seguranca
+ * nenhum. Os outros quatro casos de uso seguem a mesma forma pelo mesmo motivo; ver
+ * {@code docs/adr/0006-actor-propagation.md}, inclusive para o que ainda falta.</p>
+ *
  * <p>{@code validateConfigs()} entrou nessa lista depois: a chamada faltava, e o argumento da
  * fronteira valia inteiro para ela. Uma chave {@code $where} na config de um no passava por este
  * metodo sem nada acontecer, so para estourar dentro de {@code save()} -- fora deste
@@ -56,11 +65,13 @@ public class CreateWorkflowUseCase {
      * escolhido pelo cliente seria a escolha de qual documento a escrita mira, e o certo e que essa
      * decisao nunca saia do servidor.</p>
      *
+     * @param actor   autor da operacao, obtido da infraestrutura e nunca da entrada do cliente
      * @param command dados da definicao a criar
      * @return a definicao persistida, com id, versao e {@code createdAt} preenchidos
      * @throws InvalidWorkflowException quando alguma invariante do dominio e violada
      */
-    public WorkflowDefinition execute(CreateWorkflowCommand command) {
+    public WorkflowDefinition execute(ActorId actor, CreateWorkflowCommand command) {
+        Objects.requireNonNull(actor, "actor nao pode ser nulo");
         Objects.requireNonNull(command, "command nao pode ser nulo");
         WorkflowDefinition definition = new WorkflowDefinition();
         definition.setId(UUID.randomUUID().toString());

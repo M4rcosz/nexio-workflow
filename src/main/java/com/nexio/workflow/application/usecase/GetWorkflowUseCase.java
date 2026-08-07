@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.usecase;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
@@ -31,11 +32,13 @@ public class GetWorkflowUseCase {
     /**
      * Busca a definicao pelo identificador.
      *
-     * @param id identificador da definicao
+     * @param actor autor da operacao, obtido da infraestrutura e nunca da entrada do cliente
+     * @param id    identificador da definicao
      * @return a definicao encontrada
      * @throws WorkflowNotFoundException quando nao existe definicao com o identificador
      */
-    public WorkflowDefinition execute(String id) {
+    public WorkflowDefinition execute(ActorId actor, String id) {
+        Objects.requireNonNull(actor, "actor nao pode ser nulo");
         Objects.requireNonNull(id, "id nao pode ser nulo");
         return workflowDefinitionPort.findById(id)
                 .orElseThrow(() -> new WorkflowNotFoundException(id));

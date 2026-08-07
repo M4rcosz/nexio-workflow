@@ -9,6 +9,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.nexio.workflow.application.port.out.ActorId;
+import com.nexio.workflow.application.port.out.CurrentActorPort;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.usecase.CreateWorkflowUseCase;
 import com.nexio.workflow.application.usecase.DeleteWorkflowUseCase;
@@ -25,6 +27,7 @@ import com.nexio.workflow.infrastructure.config.GraphQLScalarsConfig;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +50,12 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
  * {@code @Configuration} comum fica de fora -- sem os scalars {@code JSON} e {@code DateTime} o
  * schema nem carregaria. O {@code WorkflowExceptionResolver}, ao contrario, entra sozinho: ele e um
  * {@code DataFetcherExceptionResolver}, que e um dos tipos que a fatia inclui por padrao.</p>
+ *
+ * <p>O {@link CurrentActorPort} entra dublado, e nao como o {@code AnonymousActorProvider} real, por
+ * uma razao de metodo: com o provedor real o ator seria {@link ActorId#ANONYMOUS}, e um teste de
+ * propagacao que compara com o unico valor que o sistema inteiro produz nao prova propagacao
+ * nenhuma -- passaria igual se o resolver montasse a constante por conta propria. Dublado, o valor
+ * so pode ter chegado ao caso de uso vindo da porta.</p>
  */
 @GraphQlTest(WorkflowResolver.class)
 @Import(GraphQLScalarsConfig.class)
@@ -67,6 +76,16 @@ class WorkflowResolverTest {
     private static final String READ_CONFIG_QUERY =
             "{ workflow(id: \"wf-1\") { nodes { url headers config } } }";
 
+    /**
+     * Ator devolvido pela porta. Deliberadamente diferente de {@link ActorId#ANONYMOUS} e sem
+     * relacao nenhuma com o conteudo dos documentos GraphQL enviados aqui: e assim que a asercao de
+     * propagacao distingue "veio da porta" de "coincidiu com o padrao".
+     */
+    private static final ActorId ACTOR = new ActorId("ator-da-infraestrutura");
+
+    @MockitoBean
+    private CurrentActorPort currentActorPort;
+
     @MockitoBean
     private CreateWorkflowUseCase createWorkflowUseCase;
 
@@ -85,9 +104,14 @@ class WorkflowResolverTest {
     @Autowired
     private GraphQlTester graphQlTester;
 
+    @BeforeEach
+    void stubTheActor() {
+        when(currentActorPort.currentActor()).thenReturn(ACTOR);
+    }
+
     @Test
     void createsWorkflowAndReturnsIt() {
-        when(createWorkflowUseCase.execute(any())).thenReturn(GraphQlFixtures.storedDefinition());
+        when(createWorkflowUseCase.execute(any(), any())).thenReturn(GraphQlFixtures.storedDefinition());
 
         graphQlTester.document(CREATE_MUTATION)
                 .variable("input", validCreateInput())
@@ -99,7 +123,7 @@ class WorkflowResolverTest {
                 .path("createWorkflow.nodes").entityList(Object.class).hasSize(2);
 
         ArgumentCaptor<CreateWorkflowCommand> command = ArgumentCaptor.forClass(CreateWorkflowCommand.class);
-        verify(createWorkflowUseCase).execute(command.capture());
+        verify(createWorkflowUseCase).execute(eq(ACTOR), command.capture());
         CreateWorkflowCommand sent = command.getValue();
         assertThat(sent.name()).isEqualTo("cobranca diaria");
         assertThat(sent.enabled()).isFalse();
@@ -110,6 +134,59 @@ class WorkflowResolverTest {
         assertThat(sent.nodes().getFirst().type()).isEqualTo(NodeType.HTTP_REQUEST);
         assertThat(sent.nodes().getFirst().nextOnSuccess()).isEqualTo("end");
         assertThat(sent.nodes().getFirst().config()).containsEntry("url", "https://exemplo.test");
+    }
+
+    /**
+     * O ator que chega ao caso de uso e o que a porta devolveu, e o documento GraphQL nao tem
+     * influencia nenhuma sobre ele.
+     *
+     * <p>A entrada deste teste tenta se passar por outro: o nome, a descricao e a config livre do no
+     * carregam {@code "admin"} e uma chave {@code actorId}. Nada disso alcanca o parametro -- e o
+     * ponto inteiro da {@code docs/adr/0006-actor-propagation.md}. Um ator escolhido por quem chama
+     * seria o {@code tenantId} da ADR 0001 outra vez: identificador de quem pede, informado por quem
+     * pede, que no dia da autorizacao viraria um seletor de dados alheios.</p>
+     */
+    @Test
+    void theActorReachingTheUseCaseComesFromThePortAndNotFromTheInput() {
+        when(createWorkflowUseCase.execute(any(), any())).thenReturn(GraphQlFixtures.storedDefinition());
+
+        graphQlTester.document(CREATE_MUTATION)
+                .variable("input", createInputImpersonatingAnotherActor())
+                .execute()
+                .path("createWorkflow.id").entity(String.class).isEqualTo(GraphQlFixtures.ID);
+
+        ArgumentCaptor<ActorId> actor = ArgumentCaptor.forClass(ActorId.class);
+        verify(createWorkflowUseCase).execute(actor.capture(), any(CreateWorkflowCommand.class));
+        verify(currentActorPort).currentActor();
+        assertThat(actor.getValue()).isEqualTo(ACTOR);
+        assertThat(actor.getValue().value()).doesNotContain("admin");
+    }
+
+    /**
+     * A outra metade da mesma garantia, e a mais forte: nao existe campo por onde tentar. O schema
+     * recusa {@code actorId} dentro do input antes de qualquer resolucao, entao a defesa nao depende
+     * de o resolver lembrar de ignorar um campo -- ele nao tem o que ignorar.
+     */
+    @Test
+    void theSchemaHasNoFieldThroughWhichAClientCouldChooseItsActor() {
+        graphQlTester.document("""
+                        mutation {
+                          createWorkflow(input: {
+                            name: "tentativa",
+                            actorId: "admin",
+                            trigger: { type: MOCK_EVENT },
+                            nodes: [{ id: "start", type: HTTP_REQUEST, config: {} }]
+                          }) { id }
+                        }
+                        """)
+                .execute()
+                .errors()
+                .satisfy(errors -> {
+                    assertThat(errors).isNotEmpty();
+                    assertThat(errors.getFirst().getMessage()).contains("actorId");
+                });
+
+        verifyNoInteractions(createWorkflowUseCase);
     }
 
     /**
@@ -173,7 +250,7 @@ class WorkflowResolverTest {
 
     @Test
     void returnsNotFoundWithTheDomainMessage() {
-        when(getWorkflowUseCase.execute("wf-404")).thenThrow(new WorkflowNotFoundException("wf-404"));
+        when(getWorkflowUseCase.execute(ACTOR, "wf-404")).thenThrow(new WorkflowNotFoundException("wf-404"));
 
         graphQlTester.document("{ workflow(id: \"wf-404\") { id } }")
                 .execute()
@@ -192,7 +269,7 @@ class WorkflowResolverTest {
      */
     @Test
     void unmappedExceptionsDoNotLeakInternals() {
-        when(getWorkflowUseCase.execute(GraphQlFixtures.ID))
+        when(getWorkflowUseCase.execute(ACTOR, GraphQlFixtures.ID))
                 .thenThrow(new IllegalStateException("falha em mongodb://nexio:senha@10.0.0.7:27017"));
 
         graphQlTester.document("{ workflow(id: \"wf-1\") { id } }")
@@ -211,7 +288,7 @@ class WorkflowResolverTest {
      */
     @Test
     void sendingDescriptionAsNullClearsIt() {
-        when(updateWorkflowUseCase.execute(eq(GraphQlFixtures.ID), any()))
+        when(updateWorkflowUseCase.execute(eq(ACTOR), eq(GraphQlFixtures.ID), any()))
                 .thenReturn(GraphQlFixtures.storedDefinition());
 
         graphQlTester.document("""
@@ -234,7 +311,7 @@ class WorkflowResolverTest {
      */
     @Test
     void omittingDescriptionLeavesItAlone() {
-        when(updateWorkflowUseCase.execute(eq(GraphQlFixtures.ID), any()))
+        when(updateWorkflowUseCase.execute(eq(ACTOR), eq(GraphQlFixtures.ID), any()))
                 .thenReturn(GraphQlFixtures.storedDefinition());
 
         graphQlTester.document("""
@@ -276,12 +353,12 @@ class WorkflowResolverTest {
                 .execute()
                 .path("deleteWorkflow").entity(Boolean.class).isEqualTo(true);
 
-        verify(deleteWorkflowUseCase).execute(GraphQlFixtures.ID);
+        verify(deleteWorkflowUseCase).execute(ACTOR, GraphQlFixtures.ID);
     }
 
     @Test
     void deleteOfUnknownWorkflowIsNotFound() {
-        doThrow(new WorkflowNotFoundException("wf-404")).when(deleteWorkflowUseCase).execute("wf-404");
+        doThrow(new WorkflowNotFoundException("wf-404")).when(deleteWorkflowUseCase).execute(ACTOR, "wf-404");
 
         graphQlTester.document("mutation { deleteWorkflow(id: \"wf-404\") }")
                 .execute()
@@ -292,7 +369,7 @@ class WorkflowResolverTest {
 
     @Test
     void listPassesLimitOffsetAndEnabledOnlyToTheUseCase() {
-        when(listWorkflowsUseCase.execute(any(), anyBoolean()))
+        when(listWorkflowsUseCase.execute(any(), any(), anyBoolean()))
                 .thenReturn(List.of(GraphQlFixtures.storedDefinition()));
 
         graphQlTester.document("{ workflows(limit: 5, offset: 10, enabledOnly: true) { id } }")
@@ -301,7 +378,7 @@ class WorkflowResolverTest {
 
         ArgumentCaptor<PageQuery> page = ArgumentCaptor.forClass(PageQuery.class);
         ArgumentCaptor<Boolean> enabledOnly = ArgumentCaptor.forClass(Boolean.class);
-        verify(listWorkflowsUseCase).execute(page.capture(), enabledOnly.capture());
+        verify(listWorkflowsUseCase).execute(eq(ACTOR), page.capture(), enabledOnly.capture());
         assertThat(page.getValue()).isEqualTo(new PageQuery(5, 10));
         assertThat(enabledOnly.getValue()).isTrue();
     }
@@ -309,13 +386,13 @@ class WorkflowResolverTest {
     /** Sem argumento, o recorte e o padrao declarado no schema -- nunca "sem recorte". */
     @Test
     void listWithoutArgumentsUsesTheSchemaDefaults() {
-        when(listWorkflowsUseCase.execute(any(), anyBoolean())).thenReturn(List.of());
+        when(listWorkflowsUseCase.execute(any(), any(), anyBoolean())).thenReturn(List.of());
 
         graphQlTester.document("{ workflows { id } }")
                 .execute()
                 .path("workflows").entityList(Object.class).hasSize(0);
 
-        verify(listWorkflowsUseCase).execute(PageQuery.firstPage(), false);
+        verify(listWorkflowsUseCase).execute(ACTOR, PageQuery.firstPage(), false);
     }
 
     @Test
@@ -377,7 +454,7 @@ class WorkflowResolverTest {
      */
     @Test
     void redactsNestedAuthorizationHeaderOnRead() {
-        when(getWorkflowUseCase.execute(GraphQlFixtures.ID))
+        when(getWorkflowUseCase.execute(ACTOR, GraphQlFixtures.ID))
                 .thenReturn(GraphQlFixtures.definitionWithSecretHeader());
 
         graphQlTester.document(READ_CONFIG_QUERY)
@@ -394,7 +471,7 @@ class WorkflowResolverTest {
     @Test
     void redactionDoesNotTouchTheStoredDefinition() {
         WorkflowDefinition stored = GraphQlFixtures.definitionWithSecretHeader();
-        when(getWorkflowUseCase.execute(GraphQlFixtures.ID)).thenReturn(stored);
+        when(getWorkflowUseCase.execute(ACTOR, GraphQlFixtures.ID)).thenReturn(stored);
 
         graphQlTester.document(READ_CONFIG_QUERY)
                 .execute()
@@ -410,7 +487,7 @@ class WorkflowResolverTest {
 
     @Test
     void activateSendsOnlyTheEnabledPatch() {
-        when(updateWorkflowUseCase.execute(eq(GraphQlFixtures.ID), any()))
+        when(updateWorkflowUseCase.execute(eq(ACTOR), eq(GraphQlFixtures.ID), any()))
                 .thenReturn(GraphQlFixtures.storedDefinition());
 
         graphQlTester.document("mutation { activateWorkflow(id: \"wf-1\") { id enabled } }")
@@ -426,7 +503,7 @@ class WorkflowResolverTest {
 
     @Test
     void deactivateSendsOnlyTheEnabledPatch() {
-        when(updateWorkflowUseCase.execute(eq(GraphQlFixtures.ID), any()))
+        when(updateWorkflowUseCase.execute(eq(ACTOR), eq(GraphQlFixtures.ID), any()))
                 .thenReturn(GraphQlFixtures.storedDefinition());
 
         graphQlTester.document("mutation { deactivateWorkflow(id: \"wf-1\") { id } }")
@@ -440,7 +517,7 @@ class WorkflowResolverTest {
 
     private UpdateWorkflowCommand capturedUpdateCommand() {
         ArgumentCaptor<UpdateWorkflowCommand> command = ArgumentCaptor.forClass(UpdateWorkflowCommand.class);
-        verify(updateWorkflowUseCase).execute(eq(GraphQlFixtures.ID), command.capture());
+        verify(updateWorkflowUseCase).execute(eq(ACTOR), eq(GraphQlFixtures.ID), command.capture());
         return command.getValue();
     }
 
@@ -459,6 +536,22 @@ class WorkflowResolverTest {
                                 "id", "end",
                                 "type", "HTTP_REQUEST",
                                 "config", Map.of())));
+    }
+
+    /**
+     * Entrada que tenta se passar por outro ator pelos unicos meios que o schema oferece: texto
+     * livre e mapa livre. Nenhum deles e lido como identidade em lugar nenhum.
+     */
+    private static Map<String, Object> createInputImpersonatingAnotherActor() {
+        return Map.of(
+                "name", "admin",
+                "description", "actorId=admin",
+                "trigger", Map.of("type", "MOCK_EVENT"),
+                "nodes", List.of(Map.of(
+                        "id", "start",
+                        "type", "HTTP_REQUEST",
+                        "url", "https://exemplo.test",
+                        "config", Map.of("actorId", "admin"))));
     }
 
     private static Map<String, Object> createInputWithBlankNodeId() {

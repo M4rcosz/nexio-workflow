@@ -13,6 +13,7 @@ import com.nexio.workflow.application.usecase.ListWorkflowsUseCase;
 import com.nexio.workflow.application.usecase.UpdateWorkflowUseCase;
 import com.nexio.workflow.infrastructure.config.GraphQLScalarsConfig;
 import com.nexio.workflow.infrastructure.config.GraphQlQueryCostConfig;
+import com.nexio.workflow.infrastructure.security.AnonymousActorProvider;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,9 +35,14 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
  * <p>Os casos de uso sao dublados de proposito: o que esta sob teste e a decisao tomada <i>antes</i>
  * de qualquer campo ser resolvido. Numa consulta recusada, nenhum deles chega a ser chamado, e e
  * isso que a asercao negativa afirma.</p>
+ *
+ * <p>O {@code AnonymousActorProvider} entra por {@code @Import} pelo mesmo motivo dos scalars: a
+ * fatia {@code @GraphQlTest} nao carrega {@code @Component}, e sem ele o resolver -- que agora
+ * recebe a porta do ator por construtor -- nao teria como ser instanciado. Aqui vale o provedor
+ * real: nada nestes testes olha o ator, e um duble so acrescentaria ruido.</p>
  */
 @GraphQlTest(WorkflowResolver.class)
-@Import({GraphQLScalarsConfig.class, GraphQlQueryCostConfig.class})
+@Import({GraphQLScalarsConfig.class, GraphQlQueryCostConfig.class, AnonymousActorProvider.class})
 class GraphQlQueryCostTest {
 
     /** A consulta legitima mais cara do schema: a pagina cheia com todos os campos. */
@@ -81,7 +87,7 @@ class GraphQlQueryCostTest {
      */
     @Test
     void acceptsAFullPageWithEveryFieldSelected() {
-        when(listWorkflowsUseCase.execute(any(), anyBoolean())).thenReturn(List.of());
+        when(listWorkflowsUseCase.execute(any(), any(), anyBoolean())).thenReturn(List.of());
 
         graphQlTester.document(FULL_PAGE_QUERY)
                 .execute()
@@ -122,7 +128,7 @@ class GraphQlQueryCostTest {
      */
     @Test
     void acceptsTheSameNumberOfAliasesWhenEachAsksForOneRecord() {
-        when(listWorkflowsUseCase.execute(any(), anyBoolean())).thenReturn(List.of());
+        when(listWorkflowsUseCase.execute(any(), any(), anyBoolean())).thenReturn(List.of());
 
         StringBuilder document = new StringBuilder("{\n");
         for (int i = 0; i < 20; i++) {

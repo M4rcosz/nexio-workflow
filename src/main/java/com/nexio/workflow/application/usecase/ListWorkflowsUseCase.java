@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.usecase;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
@@ -39,11 +40,13 @@ public class ListWorkflowsUseCase {
     /**
      * Lista as definicoes dentro do recorte informado.
      *
+     * @param actor       autor da operacao, obtido da infraestrutura e nunca da entrada do cliente
      * @param page        recorte de paginacao, nunca nulo
      * @param enabledOnly {@code true} para restringir as definicoes habilitadas
      * @return lista de definicoes, sempre dentro do limite do recorte
      */
-    public List<WorkflowDefinition> execute(PageQuery page, boolean enabledOnly) {
+    public List<WorkflowDefinition> execute(ActorId actor, PageQuery page, boolean enabledOnly) {
+        Objects.requireNonNull(actor, "actor nao pode ser nulo");
         Objects.requireNonNull(page, "page nao pode ser nulo");
         return enabledOnly
                 ? workflowDefinitionPort.findEnabled(page)

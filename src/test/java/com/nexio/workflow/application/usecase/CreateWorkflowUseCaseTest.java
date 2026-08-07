@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.usecase.command.CreateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
@@ -32,6 +33,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 class CreateWorkflowUseCaseTest {
 
+    private static final ActorId ACTOR = new ActorId("ator-do-teste");
+
     @Mock
     private WorkflowDefinitionPort port;
 
@@ -49,7 +52,7 @@ class CreateWorkflowUseCaseTest {
     void persistsTheDefinitionBuiltFromTheCommand() {
         when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        WorkflowDefinition result = useCase.execute(command());
+        WorkflowDefinition result = useCase.execute(ACTOR, command());
 
         verify(port).save(saved.capture());
         WorkflowDefinition captured = saved.getValue();
@@ -69,8 +72,8 @@ class CreateWorkflowUseCaseTest {
     void generatesTheIdentifierItself() {
         when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        String first = useCase.execute(command()).getId();
-        String second = useCase.execute(command()).getId();
+        String first = useCase.execute(ACTOR, command()).getId();
+        String second = useCase.execute(ACTOR, command()).getId();
 
         assertThat(first).isNotBlank().isNotEqualTo(second);
         assertThat(UUID.fromString(first)).hasToString(first);
@@ -97,7 +100,7 @@ class CreateWorkflowUseCaseTest {
                 WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.cyclicNodes(), null);
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(cyclic))
+                .isThrownBy(() -> useCase.execute(ACTOR, cyclic))
                 .withMessageContaining("ciclo")
                 .withCauseInstanceOf(IllegalArgumentException.class);
 
@@ -114,7 +117,7 @@ class CreateWorkflowUseCaseTest {
                 WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.validNodes(), "start");
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(command))
+                .isThrownBy(() -> useCase.execute(ACTOR, command))
                 .withMessageContaining("name");
 
         verifyNoInteractions(port);
@@ -136,7 +139,7 @@ class CreateWorkflowUseCaseTest {
                 WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.nodesWithOperatorKeyInConfig(), "start");
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(command))
+                .isThrownBy(() -> useCase.execute(ACTOR, command))
                 .withMessageContaining("'$'")
                 .withCauseInstanceOf(IllegalArgumentException.class);
 
@@ -152,7 +155,7 @@ class CreateWorkflowUseCaseTest {
                 WorkflowFixtures.mockEventTrigger(), List.of(), null);
 
         assertThatExceptionOfType(InvalidWorkflowException.class)
-                .isThrownBy(() -> useCase.execute(command))
+                .isThrownBy(() -> useCase.execute(ACTOR, command))
                 .withMessageContaining("ao menos um no");
 
         verifyNoInteractions(port);

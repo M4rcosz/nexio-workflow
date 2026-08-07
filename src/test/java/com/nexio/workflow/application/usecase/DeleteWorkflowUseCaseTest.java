@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
@@ -26,6 +27,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class DeleteWorkflowUseCaseTest {
 
     private static final String ID = "wf-1";
+
+    private static final ActorId ACTOR = new ActorId("ator-do-teste");
 
     @Mock
     private WorkflowDefinitionPort definitionPort;
@@ -49,7 +52,7 @@ class DeleteWorkflowUseCaseTest {
     void deletesWithoutCheckingExistenceFirst() {
         when(definitionPort.deleteById(ID)).thenReturn(true);
 
-        assertThatCode(() -> useCase.execute(ID)).doesNotThrowAnyException();
+        assertThatCode(() -> useCase.execute(ACTOR, ID)).doesNotThrowAnyException();
 
         verify(definitionPort).deleteById(ID);
         verify(definitionPort, never()).existsById(ID);
@@ -67,7 +70,7 @@ class DeleteWorkflowUseCaseTest {
         when(definitionPort.deleteById(ID)).thenReturn(true);
         when(executionPort.deleteByWorkflowId(ID)).thenReturn(3L);
 
-        useCase.execute(ID);
+        useCase.execute(ACTOR, ID);
 
         InOrder order = inOrder(definitionPort, executionPort);
         order.verify(definitionPort).deleteById(ID);
@@ -85,7 +88,7 @@ class DeleteWorkflowUseCaseTest {
         when(definitionPort.deleteById(ID)).thenReturn(true);
         when(executionPort.deleteByWorkflowId(ID)).thenThrow(new IllegalStateException("banco fora"));
 
-        assertThatCode(() -> useCase.execute(ID)).doesNotThrowAnyException();
+        assertThatCode(() -> useCase.execute(ACTOR, ID)).doesNotThrowAnyException();
 
         verify(executionPort).deleteByWorkflowId(ID);
     }
@@ -99,7 +102,7 @@ class DeleteWorkflowUseCaseTest {
         when(definitionPort.deleteById(ID)).thenReturn(false);
 
         assertThatExceptionOfType(WorkflowNotFoundException.class)
-                .isThrownBy(() -> useCase.execute(ID))
+                .isThrownBy(() -> useCase.execute(ACTOR, ID))
                 .matches(e -> ID.equals(e.workflowId()));
 
         verify(definitionPort).deleteById(ID);
