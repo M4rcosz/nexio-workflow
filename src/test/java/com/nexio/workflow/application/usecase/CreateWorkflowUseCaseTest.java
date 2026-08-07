@@ -1,0 +1,142 @@
+package com.nexio.workflow.application.usecase;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.application.usecase.command.CreateWorkflowCommand;
+import com.nexio.workflow.domain.exception.InvalidWorkflowException;
+import com.nexio.workflow.domain.model.WorkflowDefinition;
+import java.lang.reflect.RecordComponent;
+import java.util.List;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+/**
+ * Teste unitario do {@link CreateWorkflowUseCase} com a porta de saida dublada.
+ *
+ * <p>O que interessa aqui e o comportamento do caso de uso, nao o do banco: o que foi entregue a
+ * porta e verificado com {@link ArgumentCaptor}, porque so olhar o retorno deixaria passar um
+ * agregado montado errado que o duble devolvesse intacto.</p>
+ */
+@ExtendWith(MockitoExtension.class)
+class CreateWorkflowUseCaseTest {
+
+    @Mock
+    private WorkflowDefinitionPort port;
+
+    @Captor
+    private ArgumentCaptor<WorkflowDefinition> saved;
+
+    private CreateWorkflowUseCase useCase;
+
+    @BeforeEach
+    void setUp() {
+        useCase = new CreateWorkflowUseCase(port);
+    }
+
+    @Test
+    void persistsTheDefinitionBuiltFromTheCommand() {
+        when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        WorkflowDefinition result = useCase.execute(command());
+
+        verify(port).save(saved.capture());
+        WorkflowDefinition captured = saved.getValue();
+        assertThat(captured.getName()).isEqualTo("cobranca diaria");
+        assertThat(captured.getDescription()).isEqualTo("dispara a cobranca");
+        assertThat(captured.isEnabled()).isTrue();
+        assertThat(captured.getTriggerConfig()).isEqualTo(WorkflowFixtures.mockEventTrigger());
+        assertThat(captured.getNodes()).hasSize(2);
+        assertThat(captured.getStartNodeId()).isEqualTo("start");
+        assertThat(result).isSameAs(captured);
+    }
+
+    /**
+     * O identificador nasce no caso de uso e e diferente a cada criacao.
+     */
+    @Test
+    void generatesTheIdentifierItself() {
+        when(port.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        String first = useCase.execute(command()).getId();
+        String second = useCase.execute(command()).getId();
+
+        assertThat(first).isNotBlank().isNotEqualTo(second);
+        assertThat(UUID.fromString(first)).hasToString(first);
+    }
+
+    /**
+     * O comando nao tem por onde receber um id: nao existe o componente. Sem isso, o chamador
+     * escolheria qual documento a escrita mira.
+     */
+    @Test
+    void doesNotAcceptAClientSuppliedIdentifier() {
+        assertThat(CreateWorkflowCommand.class.getRecordComponents())
+                .extracting(RecordComponent::getName)
+                .doesNotContain("id");
+    }
+
+    /**
+     * A falha do grafo chega ao chamador como excecao do dominio, com a mensagem original e sem
+     * que nada tenha sido gravado; o callback de escrita nao precisa ser acionado para isso.
+     */
+    @Test
+    void translatesGraphViolationIntoInvalidWorkflowException() {
+        CreateWorkflowCommand cyclic = new CreateWorkflowCommand("ciclico", null, true,
+                WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.cyclicNodes(), null);
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> useCase.execute(cyclic))
+                .withMessageContaining("ciclo")
+                .withCauseInstanceOf(IllegalArgumentException.class);
+
+        verifyNoInteractions(port);
+    }
+
+    /**
+     * A recusa do setter do agregado (teto de tamanho) segue o mesmo caminho de traducao.
+     */
+    @Test
+    void translatesFieldLimitViolationIntoInvalidWorkflowException() {
+        String tooLong = "n".repeat(WorkflowDefinition.MAX_NAME_LENGTH + 1);
+        CreateWorkflowCommand command = new CreateWorkflowCommand(tooLong, null, true,
+                WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.validNodes(), "start");
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> useCase.execute(command))
+                .withMessageContaining("name");
+
+        verifyNoInteractions(port);
+    }
+
+    /**
+     * Sem nos nao ha grafo: quem valida e o dominio, o caso de uso so traduz.
+     */
+    @Test
+    void rejectsAnEmptyGraph() {
+        CreateWorkflowCommand command = new CreateWorkflowCommand("vazio", null, false,
+                WorkflowFixtures.mockEventTrigger(), List.of(), null);
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> useCase.execute(command))
+                .withMessageContaining("ao menos um no");
+
+        verifyNoInteractions(port);
+    }
+
+    private CreateWorkflowCommand command() {
+        return new CreateWorkflowCommand("cobranca diaria", "dispara a cobranca", true,
+                WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.validNodes(), "start");
+    }
+}
