@@ -2,9 +2,11 @@ package com.nexio.workflow.infrastructure.mongodb;
 
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.domain.exception.WorkflowConcurrentlyModifiedException;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -28,9 +30,24 @@ public class WorkflowDefinitionMongoAdapter implements WorkflowDefinitionPort {
         this.repository = repository;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A falha de bloqueio otimista e traduzida aqui, e nao repassada: a porta promete nao vazar
+     * tipo do Spring Data, e {@code OptimisticLockingFailureException} e exatamente isso. Sem a
+     * traducao, duas atualizacoes concorrentes davam ao perdedor um erro interno -- resposta que
+     * nenhum cliente tenta de novo -- para uma situacao que se resolve relendo e reenviando.</p>
+     *
+     * <p>A mensagem original fica de fora de proposito: ela carrega o nome da colecao e o filtro
+     * BSON cru da atualizacao que falhou, e o destino desta excecao e a resposta ao cliente.</p>
+     */
     @Override
     public WorkflowDefinition save(WorkflowDefinition definition) {
-        return repository.save(definition);
+        try {
+            return repository.save(definition);
+        } catch (OptimisticLockingFailureException e) {
+            throw new WorkflowConcurrentlyModifiedException(definition.getId(), e);
+        }
     }
 
     @Override
@@ -46,7 +63,12 @@ public class WorkflowDefinitionMongoAdapter implements WorkflowDefinitionPort {
      */
     @Override
     public List<WorkflowDefinition> findAll(PageQuery page) {
-        return repository.findAll(OffsetPageable.of(page)).getContent();
+        return repository.findBy(OffsetPageable.of(page));
+    }
+
+    @Override
+    public List<WorkflowDefinition> findEnabled(PageQuery page) {
+        return repository.findByEnabledTrue(OffsetPageable.of(page));
     }
 
     @Override

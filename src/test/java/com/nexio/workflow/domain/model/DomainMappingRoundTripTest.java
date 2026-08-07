@@ -1,9 +1,10 @@
 package com.nexio.workflow.domain.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.nexio.workflow.AbstractMongoIntegrationTest;
+import com.nexio.workflow.domain.exception.InvalidWorkflowException;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.StepStatus;
@@ -243,6 +244,13 @@ class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
     /**
      * A escrita, ao contrario da leitura, e estrita: o callback de persistencia recusa o payload
      * com chave de operador antes de qualquer coisa chegar ao banco.
+     *
+     * <p>O tipo esperado e {@link InvalidWorkflowException} e nao {@code IllegalArgumentException}
+     * de proposito, e a asercao de tipo aqui e o ponto do teste tanto quanto a de mensagem: o
+     * callback roda dentro de {@code port.save(...)}, fora do try/catch dos casos de uso, entao
+     * enquanto ele lancava a excecao generica toda violacao de chave virava INTERNAL_ERROR para o
+     * cliente -- erro de entrada reportado como falha de servidor. E este o tipo que o
+     * {@code WorkflowExceptionResolver} mapeia para BAD_REQUEST.</p>
      */
     @Test
     void writesAreStrictEvenThoughReadsAreLenient() {
@@ -251,7 +259,7 @@ class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
         execution.setWorkflowId("wf-round-trip");
         execution.setTriggerPayload(Map.of("$where", "1"));
 
-        assertThatIllegalArgumentException()
+        assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> mongoTemplate.save(execution))
                 .withMessageContaining("'$'");
         assertThat(rawById(EXECUTIONS, "exec-escrita-estrita")).isNull();
@@ -269,7 +277,7 @@ class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
                 new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
                 new WorkflowNode("check", NodeType.HTTP_REQUEST, Map.of(), "start", null, null)));
 
-        assertThatIllegalArgumentException()
+        assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> mongoTemplate.save(definition))
                 .withMessageContaining("ciclo");
         assertThat(rawById(DEFINITIONS, "wf-ciclico")).isNull();

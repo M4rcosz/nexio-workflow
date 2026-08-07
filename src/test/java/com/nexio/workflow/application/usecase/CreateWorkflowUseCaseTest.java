@@ -121,6 +121,29 @@ class CreateWorkflowUseCaseTest {
     }
 
     /**
+     * A politica estrita dos mapas livres tambem e chamada aqui, e nao so no callback de escrita.
+     *
+     * <p>A verificacao existia so dentro do {@code save()}, ou seja, fora do {@code try} que traduz
+     * a falha: uma chave {@code $where} na config de um no atravessava este metodo sem nada
+     * acontecer, para estourar la dentro da persistencia como {@code IllegalArgumentException} cru.
+     * O chamador recebia erro interno para o que e erro de digitacao dele, e o servidor registrava
+     * uma pilha inteira por requisicao. A asercao decisiva e a negativa: nada foi entregue a porta,
+     * o que so vale se a recusa acontecer <b>antes</b> do save.</p>
+     */
+    @Test
+    void translatesFreeFormConfigViolationIntoInvalidWorkflowExceptionBeforeSaving() {
+        CreateWorkflowCommand command = new CreateWorkflowCommand("config hostil", null, true,
+                WorkflowFixtures.mockEventTrigger(), WorkflowFixtures.nodesWithOperatorKeyInConfig(), "start");
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> useCase.execute(command))
+                .withMessageContaining("'$'")
+                .withCauseInstanceOf(IllegalArgumentException.class);
+
+        verifyNoInteractions(port);
+    }
+
+    /**
      * Sem nos nao ha grafo: quem valida e o dominio, o caso de uso so traduz.
      */
     @Test

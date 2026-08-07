@@ -10,23 +10,17 @@ import org.springframework.stereotype.Service;
 /**
  * Caso de uso de listagem das definicoes de workflow.
  *
- * <p>As duas consultas da porta tem contratos diferentes de proposito: {@code findAll(PageQuery)} e
- * paginada e {@code findEnabled()} nao e, porque o agendador precisa de <i>todas</i> as habilitadas
- * para registrar os cron -- uma pagina qualquer ali significaria workflow silenciosamente nunca
- * disparado. Este caso de uso serve consulta de usuario, onde a regra e a oposta: um metodo que
- * recebe {@link PageQuery} nao pode devolver lista sem teto dependendo de uma flag.</p>
+ * <p>Os dois caminhos vao paginados para o banco, e e isso que importa aqui. A porta ainda expoe
+ * {@code findEnabled()} sem recorte, porque o agendador precisa de <i>todas</i> as habilitadas para
+ * registrar os cron -- uma pagina qualquer ali significaria workflow silenciosamente nunca
+ * disparado --, mas esse metodo nao serve requisicao de usuario e nao e chamado daqui.</p>
  *
- * <p>A conciliacao escolhida foi <b>aplicar o recorte em memoria</b> sobre o resultado de
- * {@code findEnabled()}, e nao mudar a porta nem devolver a lista inteira. O motivo e o custo: a
- * colecao de definicoes nao cresce por disparo, ela e limitada ao numero de workflows que alguem
- * cadastrou, e cada documento e limitado pelo teto de {@code MAX_NODES}. Trazer essa colecao e
- * cortar aqui e barato, e evita duplicar a consulta na porta so para diferenciar quem pagina de
- * quem nao pagina. Se um dia esse volume deixar de ser desprezivel, a correcao e uma consulta
- * paginada por {@code enabled} na porta, e a assinatura publica daqui nao muda.</p>
- *
- * <p>Nenhum dos dois caminhos garante ordem estavel: {@code findAll} tambem vai ao banco sem
- * ordenacao, entao paginar em memoria nao piora o que ja valia. Ordenacao explicita e assunto de
- * quando a API expuser criterio de ordem.</p>
+ * <p>O recorte ja foi aplicado em memoria sobre {@code findEnabled()}, com o argumento de que a
+ * colecao de definicoes nao cresce por disparo. O argumento estava errado no que importava: o custo
+ * nao e o tamanho da colecao, e o fato de o {@code limit} nao reduzir trabalho nenhum. Uma unica
+ * consulta GraphQL pode repetir o mesmo campo dezenas de vezes por apelido, e cada repeticao
+ * disparava uma carga completa da colecao habilitada -- {@code limit: 1} custava o mesmo que
+ * {@code limit: 100}. Com {@code findEnabled(PageQuery)} o recorte chega ao banco.</p>
  */
 @Service
 public class ListWorkflowsUseCase {
@@ -51,17 +45,8 @@ public class ListWorkflowsUseCase {
      */
     public List<WorkflowDefinition> execute(PageQuery page, boolean enabledOnly) {
         Objects.requireNonNull(page, "page nao pode ser nulo");
-        if (!enabledOnly) {
-            return workflowDefinitionPort.findAll(page);
-        }
-        return slice(workflowDefinitionPort.findEnabled(), page);
-    }
-
-    private List<WorkflowDefinition> slice(List<WorkflowDefinition> all, PageQuery page) {
-        if (page.offset() >= all.size()) {
-            return List.of();
-        }
-        int end = (int) Math.min((long) page.offset() + page.limit(), all.size());
-        return List.copyOf(all.subList(page.offset(), end));
+        return enabledOnly
+                ? workflowDefinitionPort.findEnabled(page)
+                : workflowDefinitionPort.findAll(page);
     }
 }

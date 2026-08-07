@@ -244,6 +244,29 @@ public class WorkflowDefinition {
         validateReachability(effectiveStart, byId);
     }
 
+    /**
+     * Aplica a politica estrita de {@link MapSanitizer} sobre os mapas livres da definicao.
+     *
+     * <p>Existe pelo mesmo motivo de {@link #validateGraph()} ser um metodo publico chamado pelo
+     * caso de uso: sem uma chamada na fronteira de escrita, a unica coisa que roda esta validacao e
+     * o callback de persistencia, e uma chave {@code $where} na config de um no chegava ao cliente
+     * como erro interno, com pilha inteira no log, para o que e erro de digitacao dele.</p>
+     *
+     * <p>Nao e chamado por {@link #setNodes(List)} nem pelos construtores: a entidade precisa
+     * continuar hidratavel a partir do MongoDB sem disparar regra estrita, que e a razao de a copia
+     * do {@link MapSanitizer} ser leniente.</p>
+     *
+     * @throws IllegalArgumentException quando algum mapa livre viola a politica de escrita
+     */
+    public void validateConfigs() {
+        for (WorkflowNode node : nodes) {
+            MapSanitizer.validate(node.config(), "nodes[" + node.nodeId() + "].config");
+        }
+        if (triggerConfig != null) {
+            MapSanitizer.validate(triggerConfig.config(), "triggerConfig.config");
+        }
+    }
+
     private void validateNodeIds() {
         if (nodes.isEmpty()) {
             throw new IllegalArgumentException("O workflow precisa ter ao menos um no");

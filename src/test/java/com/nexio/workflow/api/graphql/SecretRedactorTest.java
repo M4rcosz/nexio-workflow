@@ -20,9 +20,37 @@ class SecretRedactorTest {
         "Authorization", "authorization", "AUTHORIZATION",
         "api-key", "api_key", "apikey", "X-Api-Key",
         "token", "refresh_token", "secret", "clientSecret",
-        "password", "passwd", "credential", "Cookie", "Set-Cookie"
+        "password", "passwd", "credential", "Cookie", "Set-Cookie",
+        "access_key", "accessKey", "AWS_ACCESS_KEY_ID", "privateKey", "private_key",
+        "pwd", "bearer", "signature", "x-sig", "sessionId", "session_id", "pin"
     })
     void masksEveryKeyThatNamesACredential(String key) {
+        Map<String, Object> redacted = SecretRedactor.redact(Map.of(key, "valor sensivel"));
+
+        assertThat(redacted).containsEntry(key, SecretRedactor.REDACTED);
+    }
+
+    /**
+     * Os termos curtos da lista so casam delimitados, entao palavra comum que apenas os contem nao
+     * e redigida.
+     *
+     * <p>O teste existe porque o custo do falso positivo mudou: desde que a escrita recusa o
+     * marcador, redigir {@code mapping} por engano nao deixa so a resposta menos informativa --
+     * quebra a proxima escrita de qualquer cliente que leia o workflow, edite um campo e devolva o
+     * objeto inteiro, que e o que toda tela de CRUD gerada faz.</p>
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"design", "mapping", "spinner", "shipping", "designation"})
+    void keepsWordsThatMerelyContainAShortSensitiveTermUntouched(String key) {
+        Map<String, Object> redacted = SecretRedactor.redact(Map.of(key, "valor comum"));
+
+        assertThat(redacted).containsEntry(key, "valor comum");
+    }
+
+    /** O delimitador aceita {@code _} e {@code -}, que e como estes nomes aparecem na pratica. */
+    @ParameterizedTest
+    @ValueSource(strings = {"card_pin", "session-pin", "x_sig", "request.sig"})
+    void masksShortSensitiveTermsWhenDelimited(String key) {
         Map<String, Object> redacted = SecretRedactor.redact(Map.of(key, "valor sensivel"));
 
         assertThat(redacted).containsEntry(key, SecretRedactor.REDACTED);
@@ -76,6 +104,54 @@ class SecretRedactorTest {
                 Map.of("credentials", Map.of("password", "s3nh4")));
 
         assertThat(redacted).containsEntry("credentials", SecretRedactor.REDACTED);
+    }
+
+    /**
+     * O furo que a regra de nome de chave nao fecha: {@code url} e uma chave inofensiva e o valor
+     * dela nao e. A chave de API viaja como parametro de consulta de um campo que nenhuma lista de
+     * nomes sensiveis pega, e a resposta de leitura a devolvia inteira.
+     */
+    @Test
+    void masksTheValueOfASensitiveQueryParameterKeepingTheRestOfTheUrl() {
+        Map<String, Object> redacted = SecretRedactor.redact(Map.of(
+                "url", "https://api.exemplo.test/v1/cobrancas?api_key=chave-secreta&pagina=2"));
+
+        assertThat(redacted).containsEntry("url",
+                "https://api.exemplo.test/v1/cobrancas?api_key=" + SecretRedactor.REDACTED + "&pagina=2");
+    }
+
+    /** A outra metade das credenciais que cabem num endereco: o par no {@code userinfo}. */
+    @Test
+    void masksTheUserInfoOfAnUrl() {
+        Map<String, Object> redacted = SecretRedactor.redact(Map.of(
+                "url", "https://usuario:senha@interno.exemplo.test/hook"));
+
+        assertThat(redacted).containsEntry("url",
+                "https://" + SecretRedactor.REDACTED + "@interno.exemplo.test/hook");
+    }
+
+    /**
+     * So o trecho ofensivo sai. Mascarar o endereco inteiro deixaria a resposta inutil justamente
+     * para quem precisa conferir para onde o no chama.
+     */
+    @Test
+    void keepsBenignUrlsAndBenignParametersIntact() {
+        Map<String, Object> config = new LinkedHashMap<>();
+        config.put("url", "https://api.exemplo.test/v1/cobrancas?pagina=2&ordem=desc");
+        config.put("callback", "https://exemplo.test/hook");
+        config.put("method", "POST");
+
+        assertThat(SecretRedactor.redact(config)).isEqualTo(config);
+    }
+
+    /** Texto que nao e endereco atravessa sem analise nenhuma. */
+    @Test
+    void leavesPlainTextValuesAlone() {
+        Map<String, Object> config = new LinkedHashMap<>();
+        config.put("body", "total > 100 e status == pago");
+        config.put("contentType", "application/json");
+
+        assertThat(SecretRedactor.redact(config)).isEqualTo(config);
     }
 
     @Test

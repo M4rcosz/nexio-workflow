@@ -17,10 +17,10 @@ import org.springframework.stereotype.Service;
  * tratar o documento como novo, inserindo por cima e jogando fora o bloqueio otimista -- duas
  * atualizacoes concorrentes passariam as duas, e a ultima venceria em silencio.</p>
  *
- * <p>Como todas as invariantes ja moram no agregado, aqui so acontece a chamada de
- * {@link WorkflowDefinition#validateGraph()} e a traducao da falha; ver
- * {@link CreateWorkflowUseCase} para o porque de a validacao ser chamada no caso de uso mesmo
- * existindo o callback de escrita.</p>
+ * <p>Como todas as invariantes ja moram no agregado, aqui so acontecem as chamadas de
+ * {@link WorkflowDefinition#validateGraph()} e {@link WorkflowDefinition#validateConfigs()} e a
+ * traducao da falha; ver {@link CreateWorkflowUseCase} para o porque de a validacao ser chamada no
+ * caso de uso mesmo existindo o callback de escrita.</p>
  *
  * <p>A validacao roda depois de todas as mutacoes, e nao a cada campo, de proposito: trocar
  * {@code nodes} e {@code startNodeId} na mesma atualizacao passa por um estado intermediario
@@ -68,6 +68,7 @@ public class UpdateWorkflowUseCase {
             command.nodes().ifPresent(definition::setNodes);
             command.startNodeId().ifPresent(definition::setStartNodeId);
             definition.validateGraph();
+            definition.validateConfigs();
         } catch (IllegalArgumentException e) {
             throw new InvalidWorkflowException(e.getMessage(), e);
         }

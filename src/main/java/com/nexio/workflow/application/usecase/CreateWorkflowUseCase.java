@@ -22,12 +22,18 @@ import org.springframework.stereotype.Service;
  * Repetir qualquer uma dessas checagens aqui criaria duas fontes da mesma regra, que divergem no
  * primeiro ajuste.</p>
  *
- * <p>O que este caso de uso faz e <b>chamar</b> a validacao do grafo e traduzir a falha. A chamada
- * explicita existe pela fronteira: sem ela a unica coisa que roda {@code validateGraph()} e o
- * callback de escrita do MongoDB, e o chamador receberia um {@code IllegalArgumentException} cru,
- * vindo de dentro da persistencia, embrulhado no que a infraestrutura resolvesse embrulhar. O
- * callback continua existindo, mas como rede de seguranca de todo save -- inclusive de um caso de
- * uso futuro que esqueca de validar --, e nao como a verificacao principal.</p>
+ * <p>O que este caso de uso faz e <b>chamar</b> a validacao do grafo e a dos mapas livres, e
+ * traduzir a falha. A chamada explicita existe pela fronteira: sem ela a unica coisa que roda essas
+ * validacoes e o callback de escrita do MongoDB, e o chamador receberia um
+ * {@code IllegalArgumentException} cru, vindo de dentro da persistencia, embrulhado no que a
+ * infraestrutura resolvesse embrulhar. O callback continua existindo, mas como rede de seguranca de
+ * todo save -- inclusive de um caso de uso futuro que esqueca de validar --, e nao como a
+ * verificacao principal.</p>
+ *
+ * <p>{@code validateConfigs()} entrou nessa lista depois: a chamada faltava, e o argumento da
+ * fronteira valia inteiro para ela. Uma chave {@code $where} na config de um no passava por este
+ * metodo sem nada acontecer, so para estourar dentro de {@code save()} -- fora deste
+ * {@code try} -- e virar erro interno com pilha no log, para o que e entrada invalida do usuario.</p>
  */
 @Service
 public class CreateWorkflowUseCase {
@@ -66,6 +72,7 @@ public class CreateWorkflowUseCase {
             definition.setNodes(command.nodes());
             definition.setStartNodeId(command.startNodeId());
             definition.validateGraph();
+            definition.validateConfigs();
         } catch (IllegalArgumentException e) {
             throw new InvalidWorkflowException(e.getMessage(), e);
         }

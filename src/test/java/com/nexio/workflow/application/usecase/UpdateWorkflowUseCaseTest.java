@@ -144,6 +144,27 @@ class UpdateWorkflowUseCaseTest {
         verify(port, never()).save(any());
     }
 
+    /**
+     * A politica estrita dos mapas livres tambem e chamada aqui, antes do save. Sem esta chamada a
+     * verificacao so acontecia dentro de {@code save()}, fora do {@code try} que traduz a falha, e
+     * uma chave {@code $where} enviada na config de um no voltava ao cliente como erro interno.
+     */
+    @Test
+    void translatesFreeFormConfigViolationIntoInvalidWorkflowExceptionBeforeSaving() {
+        when(port.findById(ID)).thenReturn(Optional.of(WorkflowFixtures.storedDefinition(ID)));
+
+        UpdateWorkflowCommand command = UpdateWorkflowCommand.builder()
+                .nodes(WorkflowFixtures.nodesWithOperatorKeyInConfig())
+                .build();
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> useCase.execute(ID, command))
+                .withMessageContaining("'$'")
+                .withCauseInstanceOf(IllegalArgumentException.class);
+
+        verify(port, never()).save(any());
+    }
+
     @Test
     void translatesFieldLimitViolationIntoInvalidWorkflowException() {
         when(port.findById(ID)).thenReturn(Optional.of(WorkflowFixtures.storedDefinition(ID)));

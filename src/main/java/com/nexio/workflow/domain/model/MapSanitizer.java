@@ -40,6 +40,8 @@ import java.util.Set;
  *       existe exatamente para tornar chaves com ponto seguras de gravar;</li>
  *   <li>chave com no maximo {@value #MAX_KEY_LENGTH} caracteres e valor texto com no maximo
  *       {@value #MAX_STRING_LENGTH} caracteres;</li>
+ *   <li>nenhum valor texto pode ser o {@value #REDACTED_MARKER}, que e o que a leitura devolve no
+ *       lugar de uma credencial;</li>
  *   <li>no maximo {@value #MAX_ENTRIES} entradas somando todos os niveis e {@value #MAX_DEPTH}
  *       niveis de aninhamento;</li>
  *   <li>somente {@code Map}, {@code List}, {@code String}, {@code Boolean}, {@code Date},
@@ -52,6 +54,17 @@ import java.util.Set;
  * </ul>
  */
 public final class MapSanitizer {
+
+    /**
+     * Marcador que substitui, na leitura, o valor de uma chave que nomeia credencial.
+     *
+     * <p>Mora no dominio, e nao na camada de API que o aplica, porque a escrita precisa reconhece-lo
+     * para recusa-lo: o valor volta redigido numa consulta, o cliente edita outro campo e reenvia o
+     * documento inteiro, e sem esta regra o marcador seria gravado por cima da credencial de
+     * verdade. A dependencia so pode apontar nesse sentido -- o dominio nao importa da API --, entao
+     * a constante nasce aqui e a redacao da leitura a referencia.</p>
+     */
+    public static final String REDACTED_MARKER = "***REDACTED***";
 
     /** Numero maximo de entradas, somando todos os niveis, aceito na validacao estrita. */
     public static final int MAX_ENTRIES = 200;
@@ -202,21 +215,39 @@ public final class MapSanitizer {
      * nao por {@code instanceof}: subclasses mutaveis de {@link Date} (por exemplo
      * {@code java.sql.Timestamp}) e numeros sem codec ficariam de fora do contrato ao passar por
      * {@code instanceof}, mas seriam aceitos aqui.
+     *
+     * <p>A mensagem nomeia o tipo pelo nome simples, nunca pelo qualificado: ela vira resposta de
+     * erro para o cliente, e o nome qualificado entregaria de graca o pacote de origem -- um
+     * {@code org.bson.types.Decimal128} anuncia a tecnologia de persistencia do servidor. O nome
+     * simples diz o que o chamador enviou, que e a unica parte que ajuda a corrigir.</p>
      */
     private static void validateScalar(Object value, String path) {
         if (!ALLOWED_SCALARS.contains(value.getClass())) {
             throw new IllegalArgumentException(
-                    "Valor de tipo nao suportado em '" + path + "': " + value.getClass().getName()
+                    "Valor de tipo nao suportado em '" + path + "': " + value.getClass().getSimpleName()
                             + ". Tipos aceitos: Map, List, String, Boolean, Integer, Long, Double, Float, "
                             + "Short, Byte, BigDecimal, Date, Instant ou null");
         }
     }
 
+    /**
+     * Aplica o teto de tamanho e recusa o marcador de redacao.
+     *
+     * <p>Nenhuma das duas mensagens ecoa o valor recusado: a primeira devolve so o comprimento e a
+     * segunda so o caminho. O valor e justamente o que pode ser credencial, e ecoa-lo numa mensagem
+     * de erro o mandaria para o log e para a resposta.</p>
+     */
     private static void validateString(String value, String path) {
         if (value.length() > MAX_STRING_LENGTH) {
             throw new IllegalArgumentException(
                     "Valor textual em '" + path + "' excede " + MAX_STRING_LENGTH
                             + " caracteres: " + value.length());
+        }
+        if (REDACTED_MARKER.equals(value)) {
+            throw new IllegalArgumentException(
+                    "Valor em '" + path + "' e o marcador de segredo devolvido na leitura e nao pode ser"
+                            + " gravado: ele apagaria a credencial de verdade. Envie o valor real ou omita o"
+                            + " campo que o contem para manter o que ja esta gravado");
         }
     }
 
@@ -224,7 +255,7 @@ public final class MapSanitizer {
         if (!(rawKey instanceof String key)) {
             throw new IllegalArgumentException(
                     "Chave nao textual em '" + path + "': "
-                            + (rawKey == null ? "null" : rawKey.getClass().getName()));
+                            + (rawKey == null ? "null" : rawKey.getClass().getSimpleName()));
         }
         String childPath = childPath(path, key);
         if (key.isBlank()) {

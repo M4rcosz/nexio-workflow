@@ -3,6 +3,7 @@ package com.nexio.workflow.infrastructure.mongodb;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.enums.TriggerType;
 import java.util.List;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.repository.MongoRepository;
 
 /**
@@ -14,6 +15,18 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 public interface WorkflowDefinitionMongoRepository extends MongoRepository<WorkflowDefinition, String> {
 
     /**
+     * Lista uma pagina das definicoes cadastradas.
+     *
+     * <p>Devolve {@code List} e nao {@code Page} de proposito: o {@code Page} obriga o Spring Data a
+     * emitir um {@code count} sobre a colecao inteira alem da consulta em si, e o unico consumidor
+     * da porta descarta esse total. Era uma segunda ida ao banco paga em toda listagem para nada.</p>
+     *
+     * @param pageable recorte da consulta
+     * @return lista de definicoes do recorte, vazia quando nao ha registros
+     */
+    List<WorkflowDefinition> findBy(Pageable pageable);
+
+    /**
      * Lista as definicoes habilitadas.
      *
      * <p>Casa com o indice composto {@code def_enabled_trigger} declarado na entidade.</p>
@@ -21,6 +34,17 @@ public interface WorkflowDefinitionMongoRepository extends MongoRepository<Workf
      * @return lista de definicoes habilitadas, vazia quando nao ha registros
      */
     List<WorkflowDefinition> findByEnabledTrue();
+
+    /**
+     * Lista uma pagina das definicoes habilitadas.
+     *
+     * <p>O filtro continua servido pelo prefixo {@code enabled} do indice composto
+     * {@code def_enabled_trigger}: paginar nao custa um indice novo.</p>
+     *
+     * @param pageable recorte da consulta
+     * @return lista de definicoes habilitadas do recorte, vazia quando nao ha registros
+     */
+    List<WorkflowDefinition> findByEnabledTrue(Pageable pageable);
 
     /**
      * Lista as definicoes de um determinado tipo de gatilho.

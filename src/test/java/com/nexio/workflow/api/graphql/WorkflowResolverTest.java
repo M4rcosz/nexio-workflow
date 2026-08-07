@@ -22,6 +22,7 @@ import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.TriggerType;
 import com.nexio.workflow.infrastructure.config.GraphQLScalarsConfig;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -330,6 +331,41 @@ class WorkflowResolverTest {
     }
 
     /**
+     * O deslocamento tambem tem teto, e o {@code limit} nao o cobre. Deslocamento vira {@code skip}
+     * no MongoDB, e {@code skip} nao pula: o servidor percorre e descarta um documento por unidade.
+     * Sem {@code @Max}, {@code offset: 2147483647} pedia uma varredura completa em quatro bytes,
+     * repetivel a vontade -- com um {@code limit} perfeitamente comportado do lado.
+     */
+    @Test
+    void listRejectsAnOffsetAboveTheServerMaximum() {
+        graphQlTester.document("{ workflows(offset: " + Integer.MAX_VALUE + ") { id } }")
+                .execute()
+                .errors()
+                .satisfy(errors -> {
+                    assertThat(errors).hasSize(1);
+                    assertThat(errors.getFirst().getErrorType()).hasToString(ErrorType.BAD_REQUEST.name());
+                    assertThat(errors.getFirst().getMessage()).contains("offset");
+                });
+
+        verifyNoInteractions(listWorkflowsUseCase);
+    }
+
+    /** A entrada mais funda que o mapper aceita e recusada como entrada invalida, nao como bug. */
+    @Test
+    void rejectsNodeConfigNestedDeeperThanTheDomainAccepts() {
+        graphQlTester.document(CREATE_MUTATION)
+                .variable("input", createInputWithOverlyNestedConfig())
+                .execute()
+                .errors()
+                .satisfy(errors -> {
+                    assertThat(errors).hasSize(1);
+                    assertThat(errors.getFirst().getErrorType()).hasToString(ErrorType.BAD_REQUEST.name());
+                });
+
+        verifyNoInteractions(createWorkflowUseCase);
+    }
+
+    /**
      * D1: a config de um no volta com o segredo mascarado, inclusive dentro de {@code headers}, e o
      * resto da config intacto.
      */
@@ -428,6 +464,28 @@ class WorkflowResolverTest {
                         "id", " ",
                         "type", "HTTP_REQUEST",
                         "config", Map.of())));
+    }
+
+    /**
+     * Aninhamento acima do que a copia defensiva do dominio tolera. O analisador do graphql-java
+     * aceita valor de variavel muito mais fundo do que isso sem reclamar, entao este e um documento
+     * que qualquer cliente consegue enviar.
+     */
+    private static Map<String, Object> createInputWithOverlyNestedConfig() {
+        Map<String, Object> config = new LinkedHashMap<>();
+        Map<String, Object> cursor = config;
+        for (int i = 0; i < 150; i++) {
+            Map<String, Object> child = new LinkedHashMap<>();
+            cursor.put("filho", child);
+            cursor = child;
+        }
+        return Map.of(
+                "name", "config funda demais",
+                "trigger", Map.of("type", "MOCK_EVENT"),
+                "nodes", List.of(Map.of(
+                        "id", "start",
+                        "type", "HTTP_REQUEST",
+                        "config", config)));
     }
 
     private static Map<String, Object> createInputWithBlankName() {

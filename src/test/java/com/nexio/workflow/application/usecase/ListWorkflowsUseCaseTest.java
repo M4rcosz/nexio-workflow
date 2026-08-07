@@ -23,10 +23,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 /**
  * Teste unitario do {@link ListWorkflowsUseCase} com a porta de saida dublada.
  *
- * <p>O ponto delicado e a conciliacao entre as duas consultas da porta: {@code findAll} e paginada
- * e {@code findEnabled} nao e. O que precisa valer e que o recorte seja respeitado nos dois
- * caminhos, para que a flag {@code enabledOnly} nunca transforme uma consulta paginada em uma
- * listagem sem teto.</p>
+ * <p>O que estes testes fixam e <b>qual</b> metodo da porta cada caminho chama. A porta expoe duas
+ * consultas de habilitadas com contratos diferentes: uma paginada e uma sem recorte, esta ultima
+ * existente so para o agendador, que precisa de todas as definicoes para registrar os cron. Chamar a
+ * sem recorte para servir uma consulta de usuario faz o {@code limit} nao reduzir trabalho nenhum --
+ * e como uma unica consulta GraphQL pode repetir o mesmo campo dezenas de vezes por apelido, cada
+ * repeticao vira mais uma carga completa da colecao. E um defeito que nenhuma asercao sobre o
+ * resultado enxerga: o recorte em memoria devolve exatamente a mesma lista.</p>
  */
 @ExtendWith(MockitoExtension.class)
 class ListWorkflowsUseCaseTest {
@@ -59,55 +62,48 @@ class ListWorkflowsUseCaseTest {
         assertThat(page.getValue().limit()).isEqualTo(5);
         assertThat(page.getValue().offset()).isEqualTo(10);
         verify(port, never()).findEnabled();
+        verify(port, never()).findEnabled(any());
         verifyNoMoreInteractions(port);
     }
 
     /**
-     * Com a flag, a consulta e a de habilitadas -- que a porta expoe sem paginacao de proposito,
-     * para o agendador -- e o recorte e aplicado aqui, para que o metodo nunca devolva mais do que
-     * o {@code limit} pedido.
+     * Com a flag, o recorte tambem vai inteiro para a porta, pela consulta paginada de habilitadas.
+     * A afirmacao que importa e a negativa: {@code findEnabled()} sem recorte -- o metodo do
+     * agendador -- nao pode ser tocado por um caminho que serve requisicao de usuario.
      */
     @Test
-    void appliesThePageQueryInMemoryWhenListingOnlyEnabled() {
-        when(port.findEnabled()).thenReturn(definitions(10));
+    void delegatesThePageQueryToThePaginatedPortQueryWhenListingOnlyEnabled() {
+        PageQuery requested = new PageQuery(3, 4);
+        List<WorkflowDefinition> expected = definitions(3);
+        when(port.findEnabled(requested)).thenReturn(expected);
 
-        List<WorkflowDefinition> result = useCase.execute(new PageQuery(3, 4), true);
+        assertThat(useCase.execute(requested, true)).isEqualTo(expected);
 
-        assertThat(result).extracting(WorkflowDefinition::getId).containsExactly("wf-4", "wf-5", "wf-6");
-        verify(port).findEnabled();
+        verify(port).findEnabled(page.capture());
+        assertThat(page.getValue().limit()).isEqualTo(3);
+        assertThat(page.getValue().offset()).isEqualTo(4);
+        verify(port, never()).findEnabled();
         verify(port, never()).findAll(any());
         verifyNoMoreInteractions(port);
     }
 
-    @Test
-    void returnsTheLastPartialPageWhenOnlyEnabled() {
-        when(port.findEnabled()).thenReturn(definitions(5));
-
-        List<WorkflowDefinition> result = useCase.execute(new PageQuery(4, 3), true);
-
-        assertThat(result).extracting(WorkflowDefinition::getId).containsExactly("wf-3", "wf-4");
-    }
-
-    @Test
-    void returnsEmptyWhenTheOffsetIsPastTheEnabledResults() {
-        when(port.findEnabled()).thenReturn(definitions(2));
-
-        assertThat(useCase.execute(new PageQuery(10, 50), true)).isEmpty();
-    }
-
     /**
-     * O recorte nunca compartilha estado com o que a porta devolveu: mexer na lista de origem depois
-     * nao pode alterar o resultado ja entregue ao chamador.
+     * O caso de uso nao mexe no que a porta devolveu: quem recorta e o banco, e recortar de novo
+     * aqui esconderia uma porta que ignorasse o {@code limit}.
      */
     @Test
-    void doesNotShareTheListReturnedByThePort() {
-        List<WorkflowDefinition> mutable = new ArrayList<>(definitions(3));
-        when(port.findEnabled()).thenReturn(mutable);
+    void returnsWhatThePortReturnedWithoutSlicingItAgain() {
+        List<WorkflowDefinition> fromPort = definitions(10);
+        when(port.findEnabled(any())).thenReturn(fromPort);
 
-        List<WorkflowDefinition> result = useCase.execute(new PageQuery(3, 0), true);
-        mutable.clear();
+        assertThat(useCase.execute(new PageQuery(3, 0), true)).isEqualTo(fromPort);
+    }
 
-        assertThat(result).hasSize(3);
+    @Test
+    void returnsEmptyWhenThePortHasNothingInThePage() {
+        when(port.findEnabled(any())).thenReturn(List.of());
+
+        assertThat(useCase.execute(new PageQuery(10, 50), true)).isEmpty();
     }
 
     private List<WorkflowDefinition> definitions(int count) {

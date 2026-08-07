@@ -1,12 +1,14 @@
 package com.nexio.workflow.api.graphql;
 
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
+import com.nexio.workflow.domain.exception.WorkflowConcurrentlyModifiedException;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import graphql.GraphQLError;
 import graphql.GraphqlErrorBuilder;
 import graphql.schema.DataFetchingEnvironment;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import org.springframework.graphql.execution.DataFetcherExceptionResolverAdapter;
@@ -16,10 +18,11 @@ import org.springframework.stereotype.Component;
 /**
  * Traduz as excecoes do dominio e as falhas de validacao para erros GraphQL.
  *
- * <p>E aqui, e so aqui, que o vocabulario de protocolo entra: {@link WorkflowNotFoundException} e
- * {@link InvalidWorkflowException} vivem no dominio justamente por nao conhecerem HTTP nem GraphQL.
- * Sem esta traducao, as duas cairiam no tratamento padrao e virariam {@code INTERNAL_ERROR} com a
- * mensagem generica -- o cliente receberia "erro interno" para um id que ele digitou errado.</p>
+ * <p>E aqui, e so aqui, que o vocabulario de protocolo entra: {@link WorkflowNotFoundException},
+ * {@link InvalidWorkflowException} e {@link WorkflowConcurrentlyModifiedException} vivem no dominio
+ * justamente por nao conhecerem HTTP nem GraphQL. Sem esta traducao, as tres cairiam no tratamento
+ * padrao e virariam {@code INTERNAL_ERROR} com a mensagem generica -- o cliente receberia "erro
+ * interno" para um id que ele digitou errado.</p>
  *
  * <p><b>O que nao esta mapeado cai no padrao de proposito.</b> O spring-graphql troca a mensagem de
  * qualquer excecao nao resolvida por um texto generico e registra o resto no log do servidor, e e
@@ -40,11 +43,15 @@ public class WorkflowExceptionResolver extends DataFetcherExceptionResolverAdapt
     /** Tamanho maximo do texto agregado das violacoes de validacao. */
     private static final int MAX_VIOLATIONS_MESSAGE_LENGTH = 1000;
 
+    /** Codigo publicado na extensao do erro de escrita concorrente. */
+    private static final String CONFLICT_CODE = "CONFLICT";
+
     @Override
     protected GraphQLError resolveToSingleError(Throwable ex, DataFetchingEnvironment env) {
         return switch (ex) {
             case WorkflowNotFoundException notFound -> error(env, ErrorType.NOT_FOUND, notFound.getMessage());
             case InvalidWorkflowException invalid -> error(env, ErrorType.BAD_REQUEST, invalid.getMessage());
+            case WorkflowConcurrentlyModifiedException conflict -> conflict(env, conflict);
             case ConstraintViolationException violations ->
                     error(env, ErrorType.BAD_REQUEST, describe(violations));
             default -> null;
@@ -55,6 +62,24 @@ public class WorkflowExceptionResolver extends DataFetcherExceptionResolverAdapt
         return GraphqlErrorBuilder.newError(env)
                 .errorType(errorType)
                 .message(message)
+                .build();
+    }
+
+    /**
+     * Traduz o conflito de escrita concorrente.
+     *
+     * <p>Sai como {@code BAD_REQUEST} porque e a unica classificacao de erro do spring-graphql que
+     * significa "o pedido nao foi aceito e refaze-lo pode dar certo" -- {@code INTERNAL_ERROR} diria
+     * ao cliente que o problema e do servidor e que reenviar nao adianta, que e o contrario do que
+     * vale aqui. A distincao fina fica na extensao {@code code}: e ela que separa "o que voce enviou
+     * esta errado", em que reenviar igual nunca funciona, de "alguem chegou antes", em que reler e
+     * reenviar e exatamente o procedimento.</p>
+     */
+    private GraphQLError conflict(DataFetchingEnvironment env, WorkflowConcurrentlyModifiedException ex) {
+        return GraphqlErrorBuilder.newError(env)
+                .errorType(ErrorType.BAD_REQUEST)
+                .message(ex.getMessage())
+                .extensions(Map.of("code", CONFLICT_CODE))
                 .build();
     }
 

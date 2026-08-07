@@ -1,11 +1,14 @@
 package com.nexio.workflow.infrastructure.mongodb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import com.nexio.workflow.AbstractMongoIntegrationTest;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.domain.exception.InvalidWorkflowException;
+import com.nexio.workflow.domain.exception.WorkflowConcurrentlyModifiedException;
 import com.nexio.workflow.domain.model.TriggerConfig;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.WorkflowNode;
@@ -132,6 +135,11 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
     /**
      * O callback de persistencia recusa grafo invalido em qualquer save, sem depender de o caso de
      * uso ter lembrado de chamar {@code validateGraph()}.
+     *
+     * <p>A recusa sai como {@link InvalidWorkflowException} e nao como o
+     * {@code IllegalArgumentException} cru do dominio: o callback e rede de seguranca, mas o que ele
+     * pega e entrada invalida do usuario, e o tipo generico atravessava a porta para virar erro
+     * interno na resposta -- com pilha inteira no log, por requisicao.</p>
      */
     @Test
     void saveRejectsInvalidGraphThroughTheWriteCallback() {
@@ -140,7 +148,7 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
                 new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of(), "check", null, null),
                 new WorkflowNode("check", NodeType.HTTP_REQUEST, Map.of(), "start", null, null)));
 
-        assertThatIllegalArgumentException()
+        assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> port.save(definition))
                 .withMessageContaining("ciclo");
         assertThat(port.findById("wf-ciclo")).isEmpty();
@@ -155,10 +163,42 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
         definition.setNodes(List.of(
                 new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("$where", "1"), null, null, null)));
 
-        assertThatIllegalArgumentException()
+        assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> port.save(definition))
                 .withMessageContaining("'$'");
         assertThat(port.findById("wf-config")).isEmpty();
+    }
+
+    /**
+     * Duas leituras do mesmo documento, duas gravacoes: a segunda perde, e o que ela recebe e uma
+     * excecao do dominio.
+     *
+     * <p>A porta promete nao expor tipo do Spring Data, e a
+     * {@code OptimisticLockingFailureException} atravessava inteira -- sem nenhum tratamento na
+     * camada de API, o perdedor de duas atualizacoes concorrentes recebia erro interno para uma
+     * situacao que se resolve relendo e reenviando. A mensagem tambem nao pode repetir a da causa:
+     * aquela carrega o nome da colecao e o filtro BSON da atualizacao.</p>
+     */
+    @Test
+    void secondSaveOfAStaleInstanceFailsWithTheDomainConflict() {
+        port.save(definition("wf-concorrente", "disputada", true, TriggerType.MOCK_EVENT));
+
+        WorkflowDefinition first = port.findById("wf-concorrente").orElseThrow();
+        WorkflowDefinition second = port.findById("wf-concorrente").orElseThrow();
+
+        first.setName("renomeada pelo primeiro");
+        assertThat(port.save(first).getVersion()).isOne();
+
+        second.setName("renomeada pelo segundo");
+        assertThatExceptionOfType(WorkflowConcurrentlyModifiedException.class)
+                .isThrownBy(() -> port.save(second))
+                .satisfies(error -> {
+                    assertThat(error.workflowId()).isEqualTo("wf-concorrente");
+                    assertThat(error.getMessage()).doesNotContain("workflow_definitions");
+                });
+
+        assertThat(port.findById("wf-concorrente").orElseThrow().getName())
+                .isEqualTo("renomeada pelo primeiro");
     }
 
     @Test
@@ -170,6 +210,57 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
         assertThat(port.findEnabled())
                 .extracting(WorkflowDefinition::getId)
                 .containsExactlyInAnyOrder("wf-on-1", "wf-on-2");
+    }
+
+    /**
+     * A consulta de habilitadas que serve requisicao de usuario recorta no banco: o {@code limit}
+     * precisa reduzir o trabalho do servidor, e nao so o tamanho da resposta.
+     */
+    @Test
+    void findEnabledHonoursLimitAndOffsetAndStillFiltersByEnabled() {
+        for (int i = 0; i < 5; i++) {
+            port.save(definition("wf-on-" + i, "habilitada " + i, true, TriggerType.MOCK_EVENT));
+        }
+        port.save(definition("wf-off", "desabilitada", false, TriggerType.MOCK_EVENT));
+
+        assertThat(port.findEnabled(new PageQuery(2, 0)))
+                .extracting(WorkflowDefinition::getId).containsExactly("wf-on-0", "wf-on-1");
+        assertThat(port.findEnabled(new PageQuery(2, 3)))
+                .extracting(WorkflowDefinition::getId).containsExactly("wf-on-3", "wf-on-4");
+        assertThat(port.findEnabled(new PageQuery(10, 0)))
+                .extracting(WorkflowDefinition::getId).doesNotContain("wf-off");
+    }
+
+    /**
+     * Paginar sem ordenar nao pagina: {@code skip} mais {@code limit} sobre a ordem natural do
+     * MongoDB assume que essa ordem e estavel, e ela nao e -- um documento que mude de lugar entre
+     * duas paginas sai duas vezes enquanto outro nao sai nenhuma.
+     *
+     * <p>Os documentos sao gravados na ordem inversa da dos identificadores de proposito. Sem
+     * ordenacao declarada, a leitura devolve a ordem de insercao e as paginas saem invertidas; a
+     * unica asercao que separa "ordenado por {@code _id}" de "por acaso veio na ordem certa" e
+     * comparar com a ordem dos identificadores, e nao com a de gravacao.</p>
+     */
+    @Test
+    void findAllPaginatesInIdOrderWithoutRepeatingOrSkippingRecords() {
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            ids.add(String.format("wf-%02d", i));
+        }
+        for (String id : ids.reversed()) {
+            port.save(definition(id, "definicao " + id, true, TriggerType.MOCK_EVENT));
+        }
+
+        List<String> firstPage = idsOf(port.findAll(new PageQuery(10, 0)));
+        List<String> secondPage = idsOf(port.findAll(new PageQuery(10, 10)));
+
+        assertThat(firstPage).containsExactlyElementsOf(ids.subList(0, 10));
+        assertThat(secondPage).containsExactlyElementsOf(ids.subList(10, 20));
+        assertThat(firstPage).doesNotContainAnyElementsOf(secondPage);
+    }
+
+    private List<String> idsOf(List<WorkflowDefinition> definitions) {
+        return definitions.stream().map(WorkflowDefinition::getId).toList();
     }
 
     @Test

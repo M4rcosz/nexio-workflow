@@ -3,11 +3,12 @@ package com.nexio.workflow.infrastructure.mongodb;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import com.nexio.workflow.AbstractMongoIntegrationTest;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
+import com.nexio.workflow.domain.exception.InvalidWorkflowException;
+import com.nexio.workflow.domain.exception.WorkflowConcurrentlyModifiedException;
 import com.nexio.workflow.domain.model.ExecutionStep;
 import com.nexio.workflow.domain.model.WorkflowExecution;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
@@ -110,15 +111,21 @@ class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {
     /**
      * Duas leituras do mesmo documento, duas gravacoes: o que acontece com a segunda.
      *
-     * <p>RESULTADO OBSERVADO: a segunda gravacao lanca
-     * {@link OptimisticLockingFailureException} e <b>nao</b> altera o documento. O
+     * <p>RESULTADO OBSERVADO: a segunda gravacao falha e <b>nao</b> altera o documento. O
      * {@code @Version} nao e decorativo: a atualizacao vai ao banco com o filtro
      * {@code {_id, version: 0}}, a primeira gravacao ja levou a versao para 1, e o filtro da
      * segunda nao casa com documento algum. A escrita perdida vira erro em vez de sobrescrever em
      * silencio o passo gravado pela primeira.</p>
+     *
+     * <p>O que chega ao chamador e {@link WorkflowConcurrentlyModifiedException}, e nao a
+     * {@code OptimisticLockingFailureException} do Spring Data que a origina. Este teste declara a
+     * variavel como {@link WorkflowExecutionPort} exatamente para exercitar o contrato da porta, e o
+     * contrato diz que nenhum tipo de infraestrutura atravessa -- afirmar aqui o tipo do Spring Data
+     * era afirmar a violacao. A traducao mora no adaptador, que e onde esse vocabulario pode
+     * aparecer.</p>
      */
     @Test
-    void secondSaveOfAStaleInstanceFailsWithOptimisticLocking() {
+    void secondSaveOfAStaleInstanceFailsWithTheDomainConflict() {
         port.save(execution("exec-concorrente", "wf-1", BASE));
 
         WorkflowExecution first = port.findById("exec-concorrente").orElseThrow();
@@ -130,8 +137,13 @@ class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {
         assertThat(port.save(first).getVersion()).isOne();
 
         second.addStep(new ExecutionStep("segundo", StepStatus.SUCCESS, Map.of(), null, BASE.plusSeconds(20)));
-        assertThatExceptionOfType(OptimisticLockingFailureException.class)
-                .isThrownBy(() -> port.save(second));
+        assertThatExceptionOfType(WorkflowConcurrentlyModifiedException.class)
+                .isThrownBy(() -> port.save(second))
+                .satisfies(error -> {
+                    assertThat(error.workflowId()).isEqualTo("exec-concorrente");
+                    assertThat(error.getMessage()).doesNotContain("workflow_executions");
+                    assertThat(error.getCause()).isInstanceOf(OptimisticLockingFailureException.class);
+                });
 
         WorkflowExecution persisted = port.findById("exec-concorrente").orElseThrow();
         assertThat(persisted.getVersion()).isOne();
@@ -283,6 +295,10 @@ class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {
     /**
      * O payload do gatilho e mapa livre vindo de fora: a politica estrita vale na escrita, aplicada
      * pelo callback de persistencia, independentemente de quem chamou o save.
+     *
+     * <p>A recusa sai como {@link InvalidWorkflowException} porque descreve o que o chamador
+     * enviou: o {@code IllegalArgumentException} cru atravessava a porta e virava erro interno na
+     * resposta.</p>
      */
     @Test
     void saveRejectsOperatorKeysInTriggerPayloadThroughTheWriteCallback() {
@@ -291,7 +307,7 @@ class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {
         execution.setWorkflowId("wf-1");
         execution.setTriggerPayload(Map.of("$where", "1"));
 
-        assertThatIllegalArgumentException()
+        assertThatExceptionOfType(InvalidWorkflowException.class)
                 .isThrownBy(() -> port.save(execution))
                 .withMessageContaining("'$'");
         assertThat(port.findById("exec-hostil")).isEmpty();

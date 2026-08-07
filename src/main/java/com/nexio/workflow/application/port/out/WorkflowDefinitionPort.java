@@ -37,13 +37,28 @@ public interface WorkflowDefinitionPort {
     List<WorkflowDefinition> findAll(PageQuery page);
 
     /**
-     * Lista todas as definicoes habilitadas, usadas pelos gatilhos em tempo de execucao.
+     * Lista as definicoes habilitadas dentro do recorte informado.
      *
-     * <p>Unico metodo de listagem sem paginacao, de proposito: o agendador precisa registrar o cron
-     * de todas as definicoes habilitadas de uma vez, e uma pagina qualquer significaria workflows
-     * silenciosamente nunca disparados. A colecao tambem nao cresce por disparo -- ela e limitada
-     * pelo numero de workflows que alguem cadastrou, e o teto de {@code MAX_NODES} limita o tamanho
-     * de cada documento.</p>
+     * <p>E esta a consulta que serve requisicao de usuario: o recorte chega ao banco, entao
+     * {@code limit} de fato reduz o trabalho do servidor. Antes de existir, a listagem por
+     * {@code enabledOnly} carregava a colecao habilitada inteira para cortar em memoria, e cada
+     * apelido de uma mesma consulta GraphQL disparava mais uma carga completa.</p>
+     *
+     * @param page recorte de paginacao, nunca nulo
+     * @return lista de definicoes habilitadas, vazia quando nao ha registros no recorte
+     */
+    List<WorkflowDefinition> findEnabled(PageQuery page);
+
+    /**
+     * Lista todas as definicoes habilitadas, sem recorte, para uso do agendador.
+     *
+     * <p><b>Nunca deve servir requisicao de usuario.</b> Unico metodo de listagem sem paginacao, de
+     * proposito: o agendador precisa registrar o cron de todas as definicoes habilitadas de uma vez,
+     * e uma pagina qualquer significaria workflows silenciosamente nunca disparados. Esse motivo nao
+     * vale para nenhum chamador vindo da API -- ali o recorte e obrigatorio e existe
+     * {@link #findEnabled(PageQuery)}, porque um metodo alcancavel pelo endpoint que ignora o
+     * {@code limit} e um jeito barato de fazer o servidor carregar a colecao inteira quantas vezes o
+     * cliente quiser.</p>
      *
      * @return lista de definicoes habilitadas, vazia quando nao ha registros
      */

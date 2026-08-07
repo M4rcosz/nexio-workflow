@@ -60,6 +60,18 @@ final class WorkflowFixtures {
     }
 
     /**
+     * Grafo valido cuja config carrega um operador do MongoDB, recusado por
+     * {@code validateConfigs()}.
+     *
+     * @return lista de nos com {@code $where} na config do primeiro
+     */
+    static List<WorkflowNode> nodesWithOperatorKeyInConfig() {
+        return List.of(
+                new WorkflowNode("start", NodeType.HTTP_REQUEST, Map.of("$where", "1"), "end", null, null),
+                new WorkflowNode("end", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+    }
+
+    /**
      * Gatilho por evento simulado, sem parametros.
      *
      * @return configuracao de gatilho

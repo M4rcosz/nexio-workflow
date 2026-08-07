@@ -1,5 +1,6 @@
 package com.nexio.workflow.infrastructure.config;
 
+import graphql.analysis.FieldComplexityCalculator;
 import graphql.analysis.MaxQueryComplexityInstrumentation;
 import graphql.analysis.MaxQueryDepthInstrumentation;
 import org.springframework.context.annotation.Bean;
@@ -42,8 +43,41 @@ public class GraphQlQueryCostConfig {
     /** Profundidade maxima de aninhamento aceita em uma consulta. */
     public static final int MAX_DEPTH = 14;
 
-    /** Complexidade maxima (numero de campos a resolver) aceita em uma consulta. */
-    public static final int MAX_COMPLEXITY = 200;
+    /**
+     * Complexidade maxima aceita em uma consulta, medida pelo {@link #LIST_AWARE_COMPLEXITY}.
+     *
+     * <p>O numero e o custo da consulta legitima mais cara que o schema atual permite, com folga. A
+     * pior delas e {@code workflows(limit: 100)} pedindo todos os campos de
+     * {@code WorkflowDefinition}: sete campos escalares, mais {@code trigger} com os seus dois, mais
+     * {@code nodes} com os seus seis, dao 17 por registro, e {@code 1 + 100 * 17} da 1701. Um teto
+     * de 2000 aceita essa consulta e ainda deixa margem para os campos que o Sprint 3 vai
+     * acrescentar, sem chegar perto de aceitar duas delas no mesmo documento.</p>
+     *
+     * <p>O valor subiu de 200 junto com a troca do calculo, e nao apesar dela: com o calculo antigo
+     * uma consulta valia o mesmo com {@code limit: 1} ou {@code limit: 100}, entao 200 parecia
+     * apertado e nao era -- 99 apelidos de {@code workflows(limit: 1)} somavam 198 e passavam. Sob o
+     * calculo novo, esses mesmos 99 apelidos com {@code limit: 100} somam 9999 e sao recusados.</p>
+     */
+    public static final int MAX_COMPLEXITY = 2000;
+
+    /**
+     * Multiplica o custo dos campos filhos pelo {@code limit} pedido.
+     *
+     * <p>O calculo padrao do graphql-java e {@code 1 + childComplexity} e <b>nao</b> olha
+     * cardinalidade: {@code workflows(limit: 100) { id }} pontuava 2, exatamente o mesmo que
+     * {@code workflows(limit: 1) { id }}. Com isso o unico argumento que decide quanto trabalho o
+     * servidor faz era invisivel para a instrumentacao, e o teto media o tamanho do documento em vez
+     * do custo dele -- que e justamente o que a instrumentacao existe para nao fazer.</p>
+     *
+     * <p>Ausencia do argumento conta como um: campo que nao pagina devolve um registro, e o padrao
+     * declarado no schema chega aqui como valor presente, entao o caso de {@code limit} ausente e o
+     * dos campos que nunca tiveram esse argumento.</p>
+     */
+    private static final FieldComplexityCalculator LIST_AWARE_COMPLEXITY = (env, childComplexity) -> {
+        Object limit = env.getArguments().get("limit");
+        int cardinality = limit instanceof Number number ? number.intValue() : 1;
+        return 1 + cardinality * childComplexity;
+    };
 
     /**
      * Recusa consultas mais aninhadas que {@value #MAX_DEPTH} niveis.
@@ -62,6 +96,6 @@ public class GraphQlQueryCostConfig {
      */
     @Bean
     public MaxQueryComplexityInstrumentation maxQueryComplexityInstrumentation() {
-        return new MaxQueryComplexityInstrumentation(MAX_COMPLEXITY);
+        return new MaxQueryComplexityInstrumentation(MAX_COMPLEXITY, LIST_AWARE_COMPLEXITY);
     }
 }

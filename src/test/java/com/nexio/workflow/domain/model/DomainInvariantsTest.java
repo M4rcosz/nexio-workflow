@@ -134,6 +134,31 @@ class DomainInvariantsTest {
     }
 
     /**
+     * O marcador que a leitura devolve no lugar de uma credencial nao pode voltar como valor.
+     *
+     * <p>Sem esta regra o ciclo se fechava sozinho: a consulta devolvia {@code ***REDACTED***}, o
+     * cliente editava outro campo, reenviava o documento inteiro e o marcador era gravado por cima
+     * da credencial de verdade. Nada no caminho de escrita distinguia o marcador de um valor
+     * qualquer, e o segredo original estava perdido.</p>
+     *
+     * <p>A constante mora no dominio, e nao no redator da camada de API que a aplica, exatamente
+     * para que esta validacao possa se referir a ela: a dependencia so pode apontar da API para o
+     * dominio.</p>
+     */
+    @Test
+    void validateShouldRejectTheRedactionMarkerAsAValue() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> MapSanitizer.validate(
+                        Map.of("headers", Map.of("Authorization", MapSanitizer.REDACTED_MARKER)), "config"))
+                .withMessageContaining("marcador")
+                .withMessageContaining("config.headers.Authorization");
+
+        assertThatCode(() -> MapSanitizer.validate(
+                Map.of("headers", Map.of("Authorization", "Bearer valor-real")), "config"))
+                .doesNotThrowAnyException();
+    }
+
+    /**
      * O payload de gatilho e JSON externo arbitrario: a regra antiga
      * ({@code ^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$}) rejeitava webhook legitimo. O ponto tambem passa,
      * porque o {@code MongoConfig} configura {@code setMapKeyDotReplacement}.
