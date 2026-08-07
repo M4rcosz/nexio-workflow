@@ -3,11 +3,10 @@ scalar JSON
 
 # --- QUERIES ---
 type Query {
-  workflows(tenantId: String!): [WorkflowDefinition!]!
+  # limit e offset tem padrao aqui e teto no servidor: PageQuery recusa limit acima de 100, entao
+  # nao existe consulta sem recorte. O padrao 20 espelha PageQuery.DEFAULT_LIMIT.
+  workflows(limit: Int = 20, offset: Int = 0, enabledOnly: Boolean = false): [WorkflowDefinition!]!
   workflow(id: ID!): WorkflowDefinition
-
-  executions(workflowId: ID!): [WorkflowExecution!]!
-  execution(id: ID!): WorkflowExecution
 }
 
 # --- MUTATIONS ---
@@ -15,22 +14,31 @@ type Mutation {
   createWorkflow(input: CreateWorkflowInput!): WorkflowDefinition!
   updateWorkflow(id: ID!, input: UpdateWorkflowInput!): WorkflowDefinition!
   deleteWorkflow(id: ID!): Boolean!
+
+  # atalhos para o unico campo que a operacao de ligar/desligar precisa: sao o mesmo que
+  # updateWorkflow(input: { enabled: ... }), delegam ao mesmo caso de uso e existem porque o
+  # cliente que so quer pausar um workflow nao deveria ter que montar um input parcial
   activateWorkflow(id: ID!): WorkflowDefinition!
   deactivateWorkflow(id: ID!): WorkflowDefinition!
-
-  # dispara execucao manual (mock trigger)
-  triggerWorkflow(id: ID!, payload: JSON): WorkflowExecution!
 }
+
+# As operacoes de execucao -- as queries `executions` e `execution`, a mutation `triggerWorkflow` e
+# os tipos `WorkflowExecution` e `ExecutionStep` -- foram removidas deste schema. Elas nao tem
+# resolver, e um campo declarado sem DataFetcher devolve null em silencio: publicar isso e publicar
+# um contrato que mente para o cliente. Voltam no Sprint 3, junto com os resolvers que as sustentam,
+# nas issues #24 (consulta de execucoes) e #26 (disparo de workflow).
 
 # --- TYPES ---
 type WorkflowDefinition {
   id: ID!
-  tenantId: String!
   name: String!
   description: String
   trigger: TriggerConfig!
   nodes: [WorkflowNode!]!
-  active: Boolean!
+  # no por onde a execucao comeca; nulo deixa o grafo resolver sozinho o unico no sem aresta de
+  # entrada
+  startNodeId: String
+  enabled: Boolean!
   createdAt: DateTime!
   updatedAt: DateTime!
 }
@@ -43,34 +51,23 @@ type TriggerConfig {
 }
 
 type WorkflowNode {
+  # id do no dentro do workflow; corresponde a WorkflowNode.nodeId no dominio
   id: String!
   type: NodeType!
+  # HTTP_REQUEST: { "url": "...", "method": "POST", "headers": {}, "body": {} }
+  # CONDITION:    { "expression": "total > 100" }
+  #
+  # A config volta com os valores de chaves sensiveis (Authorization, api-key, token, secret,
+  # password, credential, cookie) substituidos por um marcador. A redacao vale so para a leitura:
+  # o que esta gravado continua intacto e e o que a execucao usa.
   config: JSON!
-  # HTTP_REQUEST:  { "url": "...", "method": "POST", "headers": {}, "body": {} }
-  # CONDITION:     { "expression": "total > 100", "nextOnTrue": "node-2", "nextOnFalse": "node-3" }
+  # As arestas do grafo sao campos de primeira classe, e nunca chaves dentro de `config`: a
+  # validacao do grafo (ciclo, aresta orfa, alcancabilidade) so enxerga o que esta declarado aqui,
+  # entao uma rota escondida no blob nao tipado passaria por um grafo "validado" carregando um
+  # ciclo.
   nextOnSuccess: String
-  nextOnFailure: String
-}
-
-type WorkflowExecution {
-  id: ID!
-  workflowDefinitionId: ID!
-  tenantId: String!
-  triggerPayload: JSON
-  status: ExecutionStatus!
-  steps: [ExecutionStep!]!
-  startedAt: DateTime!
-  finishedAt: DateTime
-}
-
-type ExecutionStep {
-  nodeId: String!
-  nodeType: NodeType!
-  status: StepStatus!
-  output: JSON
-  errorMessage: String
-  startedAt: DateTime!
-  finishedAt: DateTime
+  nextOnTrue: String
+  nextOnFalse: String
 }
 
 # --- ENUMS ---
@@ -84,33 +81,43 @@ enum NodeType {
   CONDITION
 }
 
+# Os dois enums abaixo nao sao referenciados por nenhum campo enquanto as operacoes de execucao
+# estiverem fora do schema. Ficam aqui ja reconciliados com o dominio (ExecutionStatus e StepStatus)
+# porque enum sem campo nao mente para ninguem -- nao ha o que resolver -- e o Sprint 3 so precisa
+# reintroduzir os tipos que os usam.
 enum ExecutionStatus {
+  PENDING
   RUNNING
-  COMPLETED
+  SUCCESS
   FAILED
-  CANCELLED
 }
 
 enum StepStatus {
+  PENDING
   SUCCESS
-  FAILURE
+  FAILED
   SKIPPED
 }
 
 # --- INPUTS ---
 input CreateWorkflowInput {
-  tenantId: String!
   name: String!
   description: String
   trigger: TriggerConfigInput!
   nodes: [WorkflowNodeInput!]!
+  startNodeId: String
+  enabled: Boolean = false
 }
 
+# Todo campo e opcional e a distincao entre "nao enviei" e "enviei nulo" e preservada: omitir
+# `description` mantem a descricao atual, enviar `description: null` apaga.
 input UpdateWorkflowInput {
   name: String
   description: String
   trigger: TriggerConfigInput
   nodes: [WorkflowNodeInput!]
+  startNodeId: String
+  enabled: Boolean
 }
 
 input TriggerConfigInput {
@@ -119,9 +126,11 @@ input TriggerConfigInput {
 }
 
 input WorkflowNodeInput {
+  # id do no dentro do workflow; corresponde a WorkflowNode.nodeId no dominio
   id: String!
   type: NodeType!
   config: JSON!
   nextOnSuccess: String
-  nextOnFailure: String
+  nextOnTrue: String
+  nextOnFalse: String
 }
