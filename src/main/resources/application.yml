@@ -5,12 +5,19 @@ spring:
   data:
     mongodb:
       uri: ${MONGODB_URI:mongodb://nexio:nexio@localhost:27017/nexio_workflow?authSource=admin}
-      # desde o Spring Data 3.0 o padrao e false: sem isto as anotacoes @CompoundIndex nao criam indice
-      auto-index-creation: true
+      # Desligado fora de dev/teste de proposito: a criacao automatica roda na subida do contexto,
+      # o que faz a aplicacao precisar de Mongo acessivel e de privilegio de indice so para bootar,
+      # segura a subida enquanto o indice e construido numa colecao populada e, pior, derruba toda
+      # instancia no meio de um rollout com IndexOptionsConflict se alguma definicao de
+      # @CompoundIndex mudar sem trocar de nome. Em producao quem garante os indices e o
+      # MongoIndexInitializer, explicito e idempotente.
+      auto-index-creation: false
 
   graphql:
     graphiql:
-      enabled: ${GRAPHIQL_ENABLED:true}
+      # console de consultas interativo e sem autenticacao: fica desligado por padrao e so e
+      # ligado explicitamente no perfil dev
+      enabled: ${GRAPHIQL_ENABLED:false}
     path: /graphql
     schema:
       locations: classpath:graphql/**/
@@ -20,6 +27,9 @@ nexio:
     # requisicoes de saida dos nos de workflow so podem usar https; http em texto claro fica
     # restrito a dev/teste, onde o alvo e um servico local
     allow-insecure-http: ${NEXIO_HTTP_ALLOW_INSECURE:false}
+  mongodb:
+    # garante os indices declarados nas entidades depois que a aplicacao sobe
+    ensure-indexes: ${NEXIO_MONGODB_ENSURE_INDEXES:true}
 
 server:
   port: ${PORT:8080}
@@ -39,11 +49,31 @@ management:
 spring:
   config:
     activate:
+      on-profile: dev
+  data:
+    mongodb:
+      # em dev o banco e local e vazio: o custo da criacao na subida e zero e evita um passo manual
+      auto-index-creation: true
+  graphql:
+    graphiql:
+      enabled: ${GRAPHIQL_ENABLED:true}
+
+nexio:
+  http:
+    allow-insecure-http: true
+
+---
+spring:
+  config:
+    activate:
       on-profile: test
   data:
     mongodb:
-      # sobrescrito pelo Testcontainers via @DynamicPropertySource
+      # sobrescrito pelo Testcontainers via @ServiceConnection
       uri: mongodb://localhost:27017/nexio_workflow_test
+      # os testes de integracao afirmam quais indices existem: aqui a criacao na subida e o
+      # caminho mais curto, e o container nasce vazio a cada execucao
+      auto-index-creation: true
 
 nexio:
   http:

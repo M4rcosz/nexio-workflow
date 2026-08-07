@@ -3,6 +3,7 @@ package com.nexio.workflow.domain.model;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
+import com.nexio.workflow.AbstractMongoIntegrationTest;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.StepStatus;
@@ -21,12 +22,8 @@ import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.data.mongo.DataMongoTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.mongodb.core.MongoTemplate;
-import org.testcontainers.containers.MongoDBContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Teste de ida e volta do mapeamento do dominio contra um MongoDB real (Testcontainers).
@@ -38,19 +35,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>Nomeado {@code ...Test} e nao {@code ...IT} de proposito: o surefire so executa
  * {@code *Test.java} e este teste precisa rodar no {@code ./mvnw test}.</p>
  */
-@Testcontainers
 @DataMongoTest
 @Import({MongoConfig.class,
         WorkflowDefinitionWriteValidationCallback.class,
         WorkflowExecutionWriteValidationCallback.class})
-class DomainMappingRoundTripTest {
+class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
 
-    @Container
-    @ServiceConnection
-    static final MongoDBContainer MONGO = new MongoDBContainer("mongo:8");
-
-    private static final String DEFINITIONS = "workflow_definitions";
-    private static final String EXECUTIONS = "workflow_executions";
+    private static final String DEFINITIONS = DEFINITIONS_COLLECTION;
+    private static final String EXECUTIONS = EXECUTIONS_COLLECTION;
 
     @Autowired
     private MongoTemplate mongoTemplate;
@@ -176,7 +168,12 @@ class DomainMappingRoundTripTest {
 
     /**
      * As anotacoes {@code @CompoundIndex} so viram indice porque
-     * {@code spring.data.mongodb.auto-index-creation} foi ligado explicitamente.
+     * {@code spring.data.mongodb.auto-index-creation} foi ligado no perfil {@code test}.
+     *
+     * <p>Alem dos dois indices originais, dois foram acrescentados para consultas derivadas que
+     * varriam a colecao inteira: {@code def_trigger_type}, porque {@code triggerConfig.type} nao e
+     * prefixo de {@code def_enabled_trigger} e portanto nao era servido por ele, e
+     * {@code exec_status_created}, para {@code findByStatus} numa colecao que cresce sem teto.</p>
      */
     @Test
     void compoundIndexesAreCreated() {
@@ -185,8 +182,13 @@ class DomainMappingRoundTripTest {
         definition.validateGraph();
         mongoTemplate.save(definition);
 
-        assertThat(indexNames(DEFINITIONS)).contains("def_enabled_trigger");
-        assertThat(indexNames(EXECUTIONS)).contains("exec_workflow_created");
+        assertThat(indexNames(DEFINITIONS)).contains("def_enabled_trigger", "def_trigger_type");
+        assertThat(indexNames(EXECUTIONS)).contains("exec_workflow_created", "exec_status_created");
+
+        assertThat(indexKeys(DEFINITIONS, "def_trigger_type"))
+                .isEqualTo(new Document("triggerConfig.type", 1));
+        assertThat(indexKeys(EXECUTIONS, "exec_status_created"))
+                .isEqualTo(new Document("status", 1).append("createdAt", 1));
     }
 
     /**
@@ -295,6 +297,15 @@ class DomainMappingRoundTripTest {
         List<String> names = new ArrayList<>();
         mongoTemplate.getCollection(collection).listIndexes().forEach(index -> names.add(index.getString("name")));
         return names;
+    }
+
+    private Document indexKeys(String collection, String indexName) {
+        for (Document index : mongoTemplate.getCollection(collection).listIndexes()) {
+            if (indexName.equals(index.getString("name"))) {
+                return index.get("key", Document.class);
+            }
+        }
+        return null;
     }
 
     private void assertNoClassHint(Document raw, String label) {

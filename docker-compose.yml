@@ -2,8 +2,12 @@ services:
   mongo:
     image: mongo:8
     ports:
-      - "27017:27017"
+      # publicado so no loopback: "27017:27017" abriria o banco em todas as interfaces da maquina
+      - "127.0.0.1:27017:27017"
     environment:
+      # ATENCAO: credencial de desenvolvimento local, versionada de proposito e valida apenas para
+      # este compose ligado ao loopback. Nao promover para nenhum ambiente compartilhado ou
+      # acessivel pela rede -- la a credencial vem de segredo, fora do repositorio.
       MONGO_INITDB_ROOT_USERNAME: nexio
       MONGO_INITDB_ROOT_PASSWORD: nexio
       MONGO_INITDB_DATABASE: nexio_workflow

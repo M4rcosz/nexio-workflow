@@ -335,6 +335,72 @@ class DomainInvariantsTest {
         assertThat(execution.getSteps()).isEmpty();
     }
 
+    /**
+     * {@code name} e {@code description} vem do usuario: passar do teto e erro, nao algo a corrigir
+     * em silencio cortando o texto.
+     */
+    @Test
+    void shouldRejectOversizedUserSuppliedText() {
+        WorkflowDefinition definition = new WorkflowDefinition();
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> definition.setName("n".repeat(WorkflowDefinition.MAX_NAME_LENGTH + 1)))
+                .withMessageContaining("'name'");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> definition.setDescription(
+                        "d".repeat(WorkflowDefinition.MAX_DESCRIPTION_LENGTH + 1)))
+                .withMessageContaining("'description'");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> definition.setStartNodeId(
+                        "s".repeat(WorkflowDefinition.MAX_NODE_ID_LENGTH + 1)))
+                .withMessageContaining("'startNodeId'");
+
+        assertThatCode(() -> {
+            definition.setName("n".repeat(WorkflowDefinition.MAX_NAME_LENGTH));
+            definition.setDescription("d".repeat(WorkflowDefinition.MAX_DESCRIPTION_LENGTH));
+        }).doesNotThrowAnyException();
+        assertThat(definition.getName()).hasSize(WorkflowDefinition.MAX_NAME_LENGTH);
+    }
+
+    /**
+     * {@code errorMessage} e {@code ExecutionStep.error} sao gerados pelo sistema a partir de texto
+     * de excecao: lancar ali seria estourar no meio do registro de uma falha e perder a falha.
+     * Entao o texto e cortado, com marcador, e os caracteres de controle saem antes -- eles
+     * terminam no log e na resposta GraphQL, onde uma quebra de linha forja uma linha inteira.
+     */
+    @Test
+    void shouldTruncateSystemGeneratedErrorTextInsteadOfRejectingIt() {
+        WorkflowExecution execution = new WorkflowExecution();
+        execution.markRunning(Instant.now());
+        execution.markFailed("x".repeat(WorkflowExecution.MAX_ERROR_MESSAGE_LENGTH + 500), Instant.now());
+
+        assertThat(execution.getErrorMessage())
+                .hasSize(WorkflowExecution.MAX_ERROR_MESSAGE_LENGTH)
+                .endsWith(TextSanitizer.TRUNCATION_MARKER);
+
+        ExecutionStep step = new ExecutionStep("n1", StepStatus.FAILED, Map.of(),
+                "e".repeat(ExecutionStep.MAX_ERROR_LENGTH + 1), Instant.now());
+        assertThat(step.error())
+                .hasSize(ExecutionStep.MAX_ERROR_LENGTH)
+                .endsWith(TextSanitizer.TRUNCATION_MARKER);
+    }
+
+    @Test
+    void shouldStripControlCharactersFromErrorText() {
+        WorkflowExecution execution = new WorkflowExecution();
+        execution.markRunning(Instant.now());
+        execution.markFailed("timeout\n2026-08-06 ERROR [audit] linha forjada\t", Instant.now());
+
+        assertThat(execution.getErrorMessage())
+                .doesNotContain("\n")
+                .doesNotContain("\t")
+                .isEqualTo("timeout 2026-08-06 ERROR [audit] linha forjada");
+
+        ExecutionStep step = new ExecutionStep("n1", StepStatus.FAILED, Map.of(),
+                "falhou\r\nem dois passos", Instant.now());
+        assertThat(step.error()).isEqualTo("falhou  em dois passos");
+    }
+
     @Test
     void shouldAcceptValidGraph() {
         WorkflowDefinition definition = definitionWith(validNodes(), "start");
@@ -403,6 +469,41 @@ class DomainInvariantsTest {
         assertThatIllegalArgumentException()
                 .isThrownBy(definitionWith(selfLoop, "a")::validateGraph)
                 .withMessageContaining("ciclo");
+    }
+
+    /**
+     * Com {@code startNodeId} definido, a checagem de raiz unica nao roda e ilhas desconectadas
+     * passavam batido: nos que nunca seriam executados ficavam gravados como se fizessem parte do
+     * workflow.
+     */
+    @Test
+    void shouldRejectNodesUnreachableFromTheStartNode() {
+        List<WorkflowNode> withIsland = new ArrayList<>(validNodes());
+        withIsland.add(new WorkflowNode("ilha", NodeType.HTTP_REQUEST, Map.of(), "ilha2", null, null));
+        withIsland.add(new WorkflowNode("ilha2", NodeType.HTTP_REQUEST, Map.of(), null, null, null));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(definitionWith(withIsland, "start")::validateGraph)
+                .withMessageContaining("nao sao alcancaveis")
+                .withMessageContaining("ilha");
+    }
+
+    /**
+     * Um grafo inteiramente ciclico sem {@code startNodeId} nao tem no algum sem aresta de entrada,
+     * e a mensagem reportada era "precisa ter exatamente um no sem aresta de entrada, mas foram
+     * encontrados 0" -- que aponta para o lugar errado. Com a deteccao de ciclo rodando primeiro, o
+     * erro relatado passou a ser o ciclo.
+     */
+    @Test
+    void shouldReportTheCycleWhenThereIsNoStartNodeAndTheGraphIsFullyCyclic() {
+        List<WorkflowNode> cycle = List.of(
+                new WorkflowNode("a", NodeType.HTTP_REQUEST, Map.of(), "b", null, null),
+                new WorkflowNode("b", NodeType.HTTP_REQUEST, Map.of(), "a", null, null));
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(definitionWith(cycle, null)::validateGraph)
+                .withMessageContaining("ciclo")
+                .satisfies(error -> assertThat(error.getMessage()).doesNotContain("foram encontrados 0"));
     }
 
     @Test

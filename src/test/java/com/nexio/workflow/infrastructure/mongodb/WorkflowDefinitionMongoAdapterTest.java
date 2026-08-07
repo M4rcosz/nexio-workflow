@@ -3,6 +3,7 @@ package com.nexio.workflow.infrastructure.mongodb;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
+import com.nexio.workflow.AbstractMongoIntegrationTest;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.domain.model.TriggerConfig;
@@ -16,17 +17,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.data.mongo.DataMongoTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Query;
-import org.testcontainers.containers.MongoDBContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Teste de integracao do {@link WorkflowDefinitionMongoAdapter} contra um MongoDB real
@@ -39,30 +33,17 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>Nomeado {@code ...Test} e nao {@code ...IT} de proposito: o surefire so executa
  * {@code *Test.java} e este teste precisa rodar no {@code ./mvnw test}.</p>
  */
-@Testcontainers
 @DataMongoTest
 @Import({MongoConfig.class,
         WorkflowDefinitionMongoAdapter.class,
         WorkflowDefinitionWriteValidationCallback.class})
-class WorkflowDefinitionMongoAdapterTest {
-
-    @Container
-    @ServiceConnection
-    static final MongoDBContainer MONGO = new MongoDBContainer("mongo:8");
+class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
 
     @Autowired
     private WorkflowDefinitionPort port;
 
     @Autowired
-    private MongoTemplate mongoTemplate;
-
-    @Autowired
     private WorkflowDefinitionMongoRepository repository;
-
-    @BeforeEach
-    void cleanCollection() {
-        mongoTemplate.remove(new Query(), WorkflowDefinition.class);
-    }
 
     @Test
     void saveAndFindByIdRoundTripsTheWholeAggregate() {

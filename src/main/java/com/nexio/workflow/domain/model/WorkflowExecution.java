@@ -21,9 +21,16 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * PENDING e so ganha {@code startedAt} em {@link #markRunning(Instant)}, e no MongoDB o nulo
  * ordena como o menor valor. Ordenar por {@code startedAt} jogaria a execucao recem disparada para
  * o fim de uma lista "mais recentes primeiro" -- justamente a que o usuario esta esperando ver.</p>
+ *
+ * <p>O indice {@code exec_status_created} existe para a consulta por estado. A colecao cresce um
+ * documento por disparo e nao tem teto, entao {@code findByStatus} sem indice seria uma varredura
+ * que piora sozinha com o tempo. O {@code createdAt} entra como segunda chave porque o uso previsto
+ * e recolher execucoes travadas em RUNNING ha mais de X, que e um filtro por estado com recorte
+ * por data.</p>
  */
 @Document(collection = "workflow_executions")
 @CompoundIndex(name = "exec_workflow_created", def = "{'workflowId': 1, 'createdAt': -1}")
+@CompoundIndex(name = "exec_status_created", def = "{'status': 1, 'createdAt': 1}")
 public class WorkflowExecution {
 
     /**
@@ -31,6 +38,12 @@ public class WorkflowExecution {
      * crescer indefinidamente ate o limite de 16MB do BSON.
      */
     public static final int MAX_STEPS = 200;
+
+    /**
+     * Tamanho maximo da mensagem de erro guardada. O texto vem de {@code getMessage()} de excecao
+     * e e cortado, nunca rejeitado: ver {@link TextSanitizer}.
+     */
+    public static final int MAX_ERROR_MESSAGE_LENGTH = 2000;
 
     @Id
     private String id;
@@ -190,6 +203,9 @@ public class WorkflowExecution {
     /**
      * Marca a execucao como falha.
      *
+     * <p>A mensagem e higienizada e cortada em {@value #MAX_ERROR_MESSAGE_LENGTH} caracteres, nunca
+     * rejeitada: lancar aqui seria falhar ao registrar uma falha e perder a causa original.</p>
+     *
      * @param errorMessage mensagem de erro
      * @param finishedAt   momento de termino
      * @throws IllegalStateException quando a execucao nao esta RUNNING
@@ -199,7 +215,7 @@ public class WorkflowExecution {
         Objects.requireNonNull(finishedAt, "finishedAt nao pode ser nulo");
         requireCurrentStatus(ExecutionStatus.RUNNING, ExecutionStatus.FAILED);
         this.status = ExecutionStatus.FAILED;
-        this.errorMessage = errorMessage;
+        this.errorMessage = TextSanitizer.truncateSystemText(errorMessage, MAX_ERROR_MESSAGE_LENGTH);
         this.finishedAt = finishedAt;
     }
 
@@ -222,12 +238,19 @@ public class WorkflowExecution {
         }
     }
 
+    /**
+     * Devolve a versao de bloqueio otimista.
+     *
+     * <p>Nao existe {@code setVersion} publico de proposito: a versao pertence a infraestrutura de
+     * persistencia. Uma mutacao de atualizacao que vinculasse um {@code version} enviado pelo
+     * cliente anularia o bloqueio otimista, e um {@code null} faria o Spring Data tratar a
+     * entidade como nova e inserir por cima. A hidratacao nao precisa do setter, porque o
+     * mapeamento escreve direto no campo.</p>
+     *
+     * @return versao atual, {@code null} enquanto o documento nunca foi gravado
+     */
     public Long getVersion() {
         return version;
-    }
-
-    public void setVersion(Long version) {
-        this.version = version;
     }
 
     public Instant getCreatedAt() {
@@ -258,7 +281,13 @@ public class WorkflowExecution {
         return errorMessage;
     }
 
+    /**
+     * Define a mensagem de erro, higienizada e cortada em {@value #MAX_ERROR_MESSAGE_LENGTH}
+     * caracteres.
+     *
+     * @param errorMessage mensagem de erro, pode ser nula
+     */
     public void setErrorMessage(String errorMessage) {
-        this.errorMessage = errorMessage;
+        this.errorMessage = TextSanitizer.truncateSystemText(errorMessage, MAX_ERROR_MESSAGE_LENGTH);
     }
 }

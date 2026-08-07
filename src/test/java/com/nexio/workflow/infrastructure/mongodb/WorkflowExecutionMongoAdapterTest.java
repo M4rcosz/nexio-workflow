@@ -1,8 +1,11 @@
 package com.nexio.workflow.infrastructure.mongodb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
+import com.nexio.workflow.AbstractMongoIntegrationTest;
 import com.nexio.workflow.application.port.out.PageQuery;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.model.ExecutionStep;
@@ -16,19 +19,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.junit.jupiter.api.BeforeEach;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.data.mongo.DataMongoTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
-import org.testcontainers.containers.MongoDBContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Teste de integracao do {@link WorkflowExecutionMongoAdapter} contra um MongoDB real
@@ -40,16 +40,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>Nomeado {@code ...Test} e nao {@code ...IT} de proposito: o surefire so executa
  * {@code *Test.java} e este teste precisa rodar no {@code ./mvnw test}.</p>
  */
-@Testcontainers
 @DataMongoTest
 @Import({MongoConfig.class,
         WorkflowExecutionMongoAdapter.class,
         WorkflowExecutionWriteValidationCallback.class})
-class WorkflowExecutionMongoAdapterTest {
-
-    @Container
-    @ServiceConnection
-    static final MongoDBContainer MONGO = new MongoDBContainer("mongo:8");
+class WorkflowExecutionMongoAdapterTest extends AbstractMongoIntegrationTest {
 
     private static final Instant BASE = Instant.parse("2026-01-15T10:00:00Z").truncatedTo(ChronoUnit.MILLIS);
 
@@ -61,11 +56,6 @@ class WorkflowExecutionMongoAdapterTest {
 
     @Autowired
     private WorkflowExecutionMongoRepository repository;
-
-    @BeforeEach
-    void cleanCollection() {
-        mongoTemplate.remove(new Query(), WorkflowExecution.class);
-    }
 
     @Test
     void saveAndFindByIdRoundTripsTheWholeAggregate() {
@@ -88,6 +78,115 @@ class WorkflowExecutionMongoAdapterTest {
     @Test
     void findByIdReturnsEmptyForUnknownId() {
         assertThat(port.findById("exec-inexistente")).isEmpty();
+    }
+
+    /**
+     * Caminho de atualizacao: ler, mexer no agregado e gravar de novo. E o unico caminho que o
+     * Sprint 3 usa e o unico onde {@code @Version}, os getters imutaveis e a hidratacao por campo
+     * interagem -- todos os outros testes salvavam um agregado recem construido.
+     */
+    @Test
+    void updatingARereadAggregateBumpsTheVersionAndKeepsEveryStep() {
+        port.save(execution("exec-update", "wf-1", BASE));
+
+        WorkflowExecution reread = port.findById("exec-update").orElseThrow();
+        assertThat(reread.getVersion()).isZero();
+        reread.addStep(new ExecutionStep("segundo", StepStatus.SUCCESS, Map.of("statusCode", 204),
+                null, BASE.plusSeconds(10)));
+
+        WorkflowExecution updated = port.save(reread);
+
+        assertThat(updated.getVersion()).isOne();
+        assertThat(updated.getSteps()).extracting(ExecutionStep::nodeId).containsExactly("start", "segundo");
+
+        WorkflowExecution afterUpdate = port.findById("exec-update").orElseThrow();
+        assertThat(afterUpdate.getVersion()).isOne();
+        assertThat(afterUpdate.getStatus()).isEqualTo(ExecutionStatus.SUCCESS);
+        assertThat(afterUpdate.getCreatedAt()).isEqualTo(updated.getCreatedAt());
+        assertThat(afterUpdate.getSteps()).extracting(ExecutionStep::nodeId).containsExactly("start", "segundo");
+        assertThat(afterUpdate.getSteps().get(1).output()).containsEntry("statusCode", 204);
+    }
+
+    /**
+     * Duas leituras do mesmo documento, duas gravacoes: o que acontece com a segunda.
+     *
+     * <p>RESULTADO OBSERVADO: a segunda gravacao lanca
+     * {@link OptimisticLockingFailureException} e <b>nao</b> altera o documento. O
+     * {@code @Version} nao e decorativo: a atualizacao vai ao banco com o filtro
+     * {@code {_id, version: 0}}, a primeira gravacao ja levou a versao para 1, e o filtro da
+     * segunda nao casa com documento algum. A escrita perdida vira erro em vez de sobrescrever em
+     * silencio o passo gravado pela primeira.</p>
+     */
+    @Test
+    void secondSaveOfAStaleInstanceFailsWithOptimisticLocking() {
+        port.save(execution("exec-concorrente", "wf-1", BASE));
+
+        WorkflowExecution first = port.findById("exec-concorrente").orElseThrow();
+        WorkflowExecution second = port.findById("exec-concorrente").orElseThrow();
+        assertThat(first.getVersion()).isZero();
+        assertThat(second.getVersion()).isZero();
+
+        first.addStep(new ExecutionStep("primeiro", StepStatus.SUCCESS, Map.of(), null, BASE.plusSeconds(10)));
+        assertThat(port.save(first).getVersion()).isOne();
+
+        second.addStep(new ExecutionStep("segundo", StepStatus.SUCCESS, Map.of(), null, BASE.plusSeconds(20)));
+        assertThatExceptionOfType(OptimisticLockingFailureException.class)
+                .isThrownBy(() -> port.save(second));
+
+        WorkflowExecution persisted = port.findById("exec-concorrente").orElseThrow();
+        assertThat(persisted.getVersion()).isOne();
+        assertThat(persisted.getSteps()).extracting(ExecutionStep::nodeId).containsExactly("start", "primeiro");
+    }
+
+    /**
+     * Responde se as estruturas aninhadas continuam imutaveis depois de relidas do banco.
+     *
+     * <p>RESULTADO OBSERVADO: <b>depende do campo</b>, e a assimetria e real.</p>
+     * <ul>
+     *   <li>{@code triggerPayload}: a visao devolvida pelo getter e imutavel, porque o proprio
+     *       getter embrulha em {@code unmodifiableMap}. Mas o mapa <b>aninhado</b> dentro dela e um
+     *       {@code LinkedHashMap} comum e aceita mutacao, que fica visivel na entidade. A copia
+     *       profunda do {@code MapSanitizer} so roda no setter, e o Spring Data nao usa setter na
+     *       hidratacao: escreve direto no campo o que o conversor montou.</li>
+     *   <li>{@code steps[].output}: imutavel ate o fundo, inclusive relido. O construtor compacto
+     *       do record {@code ExecutionStep} <b>roda</b> na hidratacao, entao o
+     *       {@code MapSanitizer.copy} refaz a estrutura toda como imutavel.</li>
+     * </ul>
+     *
+     * <p>Ou seja, no caminho de leitura ganha quem constroi o objeto: record com construtor
+     * compacto fica imutavel, campo escrito diretamente nao. Este teste trava esse comportamento
+     * para que uma mudanca futura no mapeamento nao o inverta em silencio.</p>
+     */
+    @Test
+    void hydrationLeavesNestedTriggerPayloadMutableButStepOutputImmutable() {
+        WorkflowExecution execution = pendingExecution("exec-mutabilidade", "wf-1");
+        execution.markRunning(BASE);
+        execution.addStep(new ExecutionStep("start", StepStatus.SUCCESS,
+                Map.of("body", Map.of("total", 10)), null, BASE));
+        execution.markSucceeded(BASE.plusSeconds(5));
+        port.save(execution);
+
+        WorkflowExecution reread = port.findById("exec-mutabilidade").orElseThrow();
+
+        Map<String, Object> payload = reread.getTriggerPayload();
+        assertThat(payload).isNotEmpty();
+        assertThatExceptionOfType(UnsupportedOperationException.class)
+                .isThrownBy(() -> payload.put("novo", 1));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> nestedHeaders = (Map<String, Object>) payload.get("headers");
+        assertThatCode(() -> nestedHeaders.put("x_injetado", "sim")).doesNotThrowAnyException();
+        assertThat(reread.getTriggerPayload().get("headers"))
+                .asInstanceOf(InstanceOfAssertFactories.MAP)
+                .containsEntry("x_injetado", "sim");
+
+        Map<String, Object> output = reread.getSteps().getFirst().output();
+        assertThatExceptionOfType(UnsupportedOperationException.class)
+                .isThrownBy(() -> output.put("novo", 1));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> nestedOutput = (Map<String, Object>) output.get("body");
+        assertThatExceptionOfType(UnsupportedOperationException.class)
+                .isThrownBy(() -> nestedOutput.put("novo", 1));
     }
 
     /**

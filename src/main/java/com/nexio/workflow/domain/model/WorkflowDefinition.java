@@ -21,13 +21,29 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 /**
  * Definicao de um workflow: o gatilho e o grafo de nos que sera executado.
+ *
+ * <p>Sao dois indices sobre {@code triggerConfig.type} de proposito. O composto
+ * {@code def_enabled_trigger} serve a consulta por habilitadas e a combinacao
+ * {@code enabled + tipo}, mas <b>nao</b> serve a consulta por tipo sozinho: {@code triggerConfig
+ * .type} nao e prefixo de {@code {enabled, triggerConfig.type}}, entao {@code findByTriggerConfig
+ * Type} varreria a colecao inteira. O {@code def_trigger_type} cobre esse caso.</p>
  */
 @Document(collection = "workflow_definitions")
 @CompoundIndex(name = "def_enabled_trigger", def = "{'enabled': 1, 'triggerConfig.type': 1}")
+@CompoundIndex(name = "def_trigger_type", def = "{'triggerConfig.type': 1}")
 public class WorkflowDefinition {
 
     /** Numero maximo de nos permitido em um workflow. */
     public static final int MAX_NODES = 50;
+
+    /** Tamanho maximo do nome, que vem do usuario. */
+    public static final int MAX_NAME_LENGTH = 200;
+
+    /** Tamanho maximo da descricao, que vem do usuario. */
+    public static final int MAX_DESCRIPTION_LENGTH = 2000;
+
+    /** Tamanho maximo de {@code startNodeId}, alinhado ao teto do proprio id de no. */
+    public static final int MAX_NODE_ID_LENGTH = 64;
 
     private static final Pattern NODE_ID_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
 
@@ -78,16 +94,34 @@ public class WorkflowDefinition {
         return name;
     }
 
+    /**
+     * Define o nome do workflow, aplicando o teto de {@value #MAX_NAME_LENGTH} caracteres.
+     *
+     * <p>Rejeita em vez de cortar: o nome vem do usuario, que pode corrigi-lo. A hidratacao do
+     * Spring Data nao passa por este setter (o mapeamento escreve direto no campo), entao a regra
+     * vale so para codigo da aplicacao e nao impede reler um documento antigo acima do limite.</p>
+     *
+     * @param name nome do workflow, pode ser nulo
+     * @throws IllegalArgumentException quando o nome excede {@value #MAX_NAME_LENGTH} caracteres
+     */
     public void setName(String name) {
-        this.name = name;
+        this.name = TextSanitizer.requireWithin(name, MAX_NAME_LENGTH, "name");
     }
 
     public String getDescription() {
         return description;
     }
 
+    /**
+     * Define a descricao do workflow, aplicando o teto de {@value #MAX_DESCRIPTION_LENGTH}
+     * caracteres.
+     *
+     * @param description descricao do workflow, pode ser nula
+     * @throws IllegalArgumentException quando a descricao excede {@value #MAX_DESCRIPTION_LENGTH}
+     *         caracteres
+     */
     public void setDescription(String description) {
-        this.description = description;
+        this.description = TextSanitizer.requireWithin(description, MAX_DESCRIPTION_LENGTH, "description");
     }
 
     public boolean isEnabled() {
@@ -138,16 +172,33 @@ public class WorkflowDefinition {
         return startNodeId;
     }
 
+    /**
+     * Define o no inicial, aplicando o teto de {@value #MAX_NODE_ID_LENGTH} caracteres.
+     *
+     * <p>O valor so e confrontado com os nos existentes em {@link #validateGraph()}; aqui o teto
+     * fecha o caminho de quem chama apenas o setter, para que um texto arbitrario de tamanho
+     * ilimitado nao chegue ao documento.</p>
+     *
+     * @param startNodeId identificador do no inicial, pode ser nulo
+     * @throws IllegalArgumentException quando excede {@value #MAX_NODE_ID_LENGTH} caracteres
+     */
     public void setStartNodeId(String startNodeId) {
-        this.startNodeId = startNodeId;
+        this.startNodeId = TextSanitizer.requireWithin(startNodeId, MAX_NODE_ID_LENGTH, "startNodeId");
     }
 
+    /**
+     * Devolve a versao de bloqueio otimista.
+     *
+     * <p>Nao existe {@code setVersion} publico de proposito: a versao pertence a infraestrutura de
+     * persistencia. Uma mutacao de atualizacao que vinculasse um {@code version} enviado pelo
+     * cliente anularia o bloqueio otimista, e um {@code null} faria o Spring Data tratar a
+     * entidade como nova e inserir por cima. A hidratacao nao precisa do setter, porque o
+     * mapeamento escreve direto no campo.</p>
+     *
+     * @return versao atual, {@code null} enquanto o documento nunca foi gravado
+     */
     public Long getVersion() {
         return version;
-    }
-
-    public void setVersion(Long version) {
-        this.version = version;
     }
 
     public Instant getCreatedAt() {
@@ -173,6 +224,12 @@ public class WorkflowDefinition {
      * hidratavel a partir do MongoDB sem disparar validacao. Quem garante a chamada e o callback de
      * persistencia, que roda em todo save independentemente do caso de uso que o disparou.</p>
      *
+     * <p>A ordem das verificacoes importa. A deteccao de ciclo roda <b>antes</b> da resolucao do no
+     * inicial: um grafo inteiramente ciclico sem {@code startNodeId} nao tem no algum sem aresta de
+     * entrada, e a checagem do no inicial reportava "precisa ter exatamente um no sem aresta de
+     * entrada, mas foram encontrados 0" -- uma mensagem que aponta para o lugar errado. Com o ciclo
+     * verificado primeiro, o erro relatado e o ciclo, que e a causa real.</p>
+     *
      * @throws IllegalArgumentException quando alguma invariante do grafo e violada
      */
     public void validateGraph() {
@@ -182,8 +239,9 @@ public class WorkflowDefinition {
             byId.put(node.nodeId(), node);
         }
         validateEdges(byId);
-        validateStartNode(byId);
         validateAcyclic(byId);
+        String effectiveStart = validateStartNode(byId);
+        validateReachability(effectiveStart, byId);
     }
 
     private void validateNodeIds() {
@@ -249,13 +307,22 @@ public class WorkflowDefinition {
         }
     }
 
-    private void validateStartNode(Map<String, WorkflowNode> byId) {
+    /**
+     * Resolve o no por onde a execucao comeca: o {@code startNodeId} declarado ou, na ausencia
+     * dele, o unico no sem aresta de entrada.
+     *
+     * @param byId nos indexados por identificador
+     * @return identificador do no inicial efetivo
+     * @throws IllegalArgumentException quando o {@code startNodeId} nao existe ou quando, sem ele,
+     *         o grafo nao tem exatamente uma raiz
+     */
+    private String validateStartNode(Map<String, WorkflowNode> byId) {
         if (startNodeId != null) {
             if (!byId.containsKey(startNodeId)) {
                 throw new IllegalArgumentException(
                         "startNodeId '" + startNodeId + "' nao corresponde a nenhum no");
             }
-            return;
+            return startNodeId;
         }
         Set<String> withInbound = new HashSet<>();
         for (WorkflowNode node : nodes) {
@@ -272,13 +339,56 @@ public class WorkflowDefinition {
         if (roots.size() != 1) {
             throw new IllegalArgumentException(
                     "Sem startNodeId definido, o grafo precisa ter exatamente um no sem aresta de entrada, "
-                            + "mas foram encontrados " + roots.size());
+                            + "mas foram encontrados " + roots.size()
+                            + " (nenhuma raiz normalmente indica ciclo; mais de uma, partes soltas)");
         }
+        return roots.getFirst();
     }
 
     private void addTarget(Set<String> targets, String target) {
         if (target != null) {
             targets.add(target);
+        }
+    }
+
+    /**
+     * Exige que todo no seja alcancavel a partir do no inicial.
+     *
+     * <p>Rejeita em vez de apenas avisar. Um no fora do alcance do inicio nunca sera executado:
+     * nao ha caminho que chegue nele, entao ele nao e um "trecho ainda desconectado", e lixo que
+     * ja passou por toda a validacao e vai ficar guardado dando a impressao de que faz parte do
+     * workflow. Sem {@code startNodeId} a checagem de raiz unica ja cobria a maior parte disso,
+     * mas com {@code startNodeId} definido ilhas inteiras passavam sem nenhuma reclamacao. Um
+     * aviso nao serviria: o modelo nao tem para onde emitir aviso que chegue a quem editou, e a
+     * definicao seria gravada do mesmo jeito.</p>
+     *
+     * @param startId identificador do no inicial efetivo
+     * @param byId    nos indexados por identificador
+     * @throws IllegalArgumentException quando existe no inalcancavel
+     */
+    private void validateReachability(String startId, Map<String, WorkflowNode> byId) {
+        Set<String> reachable = new HashSet<>();
+        Deque<String> pending = new ArrayDeque<>();
+        pending.push(startId);
+        reachable.add(startId);
+        while (!pending.isEmpty()) {
+            WorkflowNode current = byId.get(pending.pop());
+            for (String next : successors(current)) {
+                if (reachable.add(next)) {
+                    pending.push(next);
+                }
+            }
+        }
+        List<String> unreachable = new ArrayList<>();
+        for (WorkflowNode node : nodes) {
+            if (!reachable.contains(node.nodeId())) {
+                unreachable.add(node.nodeId());
+            }
+        }
+        if (!unreachable.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Os nos " + unreachable + " nao sao alcancaveis a partir de '" + startId
+                            + "' e nunca seriam executados");
         }
     }
 
