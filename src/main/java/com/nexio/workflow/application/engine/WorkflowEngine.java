@@ -2,10 +2,13 @@ package com.nexio.workflow.application.engine;
 
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
+import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import com.nexio.workflow.domain.model.ExecutionStep;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
 import com.nexio.workflow.domain.model.WorkflowExecution;
+import com.nexio.workflow.domain.model.TextSanitizer;
 import com.nexio.workflow.domain.model.WorkflowNode;
+import com.nexio.workflow.domain.model.enums.ExecutionStatus;
 import com.nexio.workflow.domain.model.enums.NodeType;
 import com.nexio.workflow.domain.model.enums.StepStatus;
 import java.time.Clock;
@@ -17,7 +20,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Percorre o grafo de uma {@link WorkflowDefinition} e registra a execucao.
@@ -58,6 +64,15 @@ import java.util.UUID;
  * alguem ja decidiu executar.</p>
  */
 public class WorkflowEngine {
+
+    private static final Logger LOG = LoggerFactory.getLogger(WorkflowEngine.class);
+
+    /** Teto do id levado ao log, para que um id arbitrario nao vire linha de log de tamanho livre. */
+    private static final int MAX_ID_IN_LOG = 64;
+
+    /** Motivo registrado quando o documento da execucao some no meio da caminhada. */
+    private static final String EXECUTION_VANISHED =
+            "A execucao foi removida enquanto o workflow rodava";
 
     private final Map<NodeType, NodeExecutor> executorsByType;
     private final WorkflowExecutionPort executionPort;
@@ -111,41 +126,59 @@ public class WorkflowEngine {
     public WorkflowExecution execute(WorkflowDefinition definition, Map<String, Object> triggerPayload) {
         Objects.requireNonNull(definition, "definition nao pode ser nulo");
         WorkflowExecution execution = createRunning(definition, triggerPayload);
-        String failure = walk(definition, execution);
+        String failure;
+        try {
+            failure = walk(definition, execution);
+        } catch (RuntimeException | StackOverflowError t) {
+            // A gravacao do estado terminal nao pode depender de a caminhada ter corrido bem. O
+            // documento ja nasceu RUNNING; qualquer coisa que escape daqui sem ser convertida em
+            // motivo de falha deixa a execucao presa nesse estado para sempre -- o orfao que a ADR
+            // 0005 afirma nao existir no modelo sincrono, e que nada varre porque o varredor so foi
+            // considerado obrigatorio para o modelo assincrono.
+            //
+            // StackOverflowError entra na lista de proposito, e nao por zelo com Error em geral: o
+            // parser do SpEL e recursivo, o teto de 512 caracteres da expressao acomoda folgadamente
+            // aninhamento suficiente para estourar a pilha, e a issue #22 vai colocar exatamente
+            // isso no caminho. Um OutOfMemoryError continua subindo, porque ali nao ha nada util a
+            // fazer.
+            failure = "Falha interna na execucao: " + t.getClass().getSimpleName();
+        }
         Instant finishedAt = clock.instant();
 
-        WorkflowExecution terminal = reloadForTerminalWrite(execution);
+        Optional<WorkflowExecution> reloaded = executionPort.findById(execution.getId());
+        if (reloaded.isEmpty()) {
+            // A execucao sumiu durante a caminhada -- hoje isso acontece quando o workflow e
+            // apagado no meio do disparo e a cascata do DeleteWorkflowUseCase leva as execucoes
+            // junto. Nao ha documento para gravar o estado terminal, e insistir no save so
+            // produziria um conflito de versao, que mentiria sobre a causa: diria "alguem alterou
+            // concorrentemente, releia" para uma linha que nao existe mais. Devolvemos o agregado
+            // em memoria marcado FAILED, sem persistir.
+            LOG.warn("Execucao '{}' desapareceu durante a caminhada; estado terminal nao gravado",
+                    TextSanitizer.truncateSystemText(execution.getId(), MAX_ID_IN_LOG));
+            execution.markFailed(failure == null ? EXECUTION_VANISHED : failure, finishedAt);
+            return execution;
+        }
+
+        WorkflowExecution terminal = reloaded.get();
+        if (terminal.getStatus() != ExecutionStatus.RUNNING) {
+            // Alguem levou a execucao a um estado terminal enquanto a engine caminhava. Hoje nao
+            // existe quem faca isso; quando existir -- um cancelamento --, aplicar
+            // markSucceeded/markFailed por cima seria absorver essa decisao em silencio, ou
+            // estourar um IllegalStateException cru vindo da maquina de estados. A releitura
+            // resolveu o conflito com as gravacoes da propria engine, e nao pode virar licenca para
+            // ignorar escrita alheia.
+            LOG.warn("Execucao '{}' ja estava em {} ao fim da caminhada; estado preservado",
+                    TextSanitizer.truncateSystemText(execution.getId(), MAX_ID_IN_LOG),
+                    terminal.getStatus());
+            return terminal;
+        }
+
         if (failure == null) {
             terminal.markSucceeded(finishedAt);
         } else {
             terminal.markFailed(failure, finishedAt);
         }
         return executionPort.save(terminal);
-    }
-
-    /**
-     * Rele a execucao antes de gravar o estado terminal.
-     *
-     * <p><b>Nao e zelo: sem isto nenhuma execucao com um no sequer termina.</b> O
-     * {@code appendStep} do adaptador usa {@code updateFirst}, e o Spring Data <b>incrementa a
-     * {@code @Version}</b> em toda atualizacao de entidade versionada. Depois de N passos o
-     * documento esta na versao N enquanto o agregado em memoria continua na versao com que nasceu,
-     * e o {@code save} final -- que passa pelo bloqueio otimista -- e recusado com conflito. O
-     * defeito atravessa camadas: os testes de unidade da engine usam porta falsa, que nao simula o
-     * incremento, entao a suite inteira passava com toda execucao quebrada.</p>
-     *
-     * <p>A releitura tambem torna o espelho em memoria desnecessario para <i>esta</i> gravacao: o
-     * documento relido ja traz os passos que o {@code $push} acrescentou. O espelho continua
-     * existindo porque a engine precisa contar os passos durante a caminhada sem ir ao banco a cada
-     * no.</p>
-     *
-     * <p>A janela entre a releitura e o {@code save} continua protegida pela versao: se alguem
-     * alterar a execucao nesse intervalo -- um cancelamento, no dia em que existir --, o conflito
-     * volta a ser levantado, que e o comportamento desejado. O que se corrigiu foi o conflito com
-     * as proprias gravacoes da engine, que nunca foi concorrencia de verdade.</p>
-     */
-    private WorkflowExecution reloadForTerminalWrite(WorkflowExecution execution) {
-        return executionPort.findById(execution.getId()).orElse(execution);
     }
 
     private WorkflowExecution createRunning(WorkflowDefinition definition, Map<String, Object> triggerPayload) {
@@ -273,6 +306,14 @@ public class WorkflowEngine {
             executionPort.appendStep(execution.getId(), step);
         } catch (InvalidWorkflowException e) {
             return "Passo do no '" + node.nodeId() + "' recusado na gravacao: " + e.getMessage();
+        } catch (WorkflowNotFoundException e) {
+            // A execucao foi apagada no meio da caminhada. Antes desta clausula a excecao escapava
+            // do execute() inteiro: nenhum estado terminal era gravado, a execucao ficava presa em
+            // RUNNING -- o orfao que a ADR 0005 afirma nao existir no modelo sincrono -- e quem
+            // disparou recebia NOT_FOUND citando um id de execucao que nunca enviou. E alcancavel
+            // hoje: basta apagar o workflow enquanto ele executa, porque a cascata do
+            // DeleteWorkflowUseCase apaga as execucoes junto.
+            return EXECUTION_VANISHED;
         }
         execution.addStep(step);
         return null;

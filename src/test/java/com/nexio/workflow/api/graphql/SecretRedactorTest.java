@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -54,6 +55,24 @@ class SecretRedactorTest {
         Map<String, Object> redacted = SecretRedactor.redact(Map.of(key, "valor sensivel"));
 
         assertThat(redacted).containsEntry(key, SecretRedactor.REDACTED);
+    }
+
+    /**
+     * Um {@code url} nulo passa pela redacao intacto, em vez de derrubar a leitura.
+     *
+     * <p>O teste existe por um defeito com consequencia desproporcional ao tamanho. Todo no CONDITION
+     * tem {@code url} nulo -- a validacao por tipo exige isso --, e {@code new URI(null)} lanca
+     * NullPointerException, nao URISyntaxException, entao o {@code catch} do metodo nao pegava. Como
+     * a redacao roda no construtor do DTO de resposta, gravar um unico workflow com no CONDITION
+     * passava na escrita e depois quebrava toda consulta {@code workflows}, que percorre as
+     * definicoes uma a uma -- inclusive a consulta necessaria para achar e apagar o workflow
+     * envenenado. Uma mutation anonima, negacao de servico permanente na leitura.</p>
+     */
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"   "})
+    void leavesAnAbsentUrlAloneInsteadOfFailingTheWholeRead(String url) {
+        assertThat(SecretRedactor.redactUrl(url)).isEqualTo(url);
     }
 
     @Test

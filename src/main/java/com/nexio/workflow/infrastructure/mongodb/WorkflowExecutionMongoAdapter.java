@@ -73,10 +73,20 @@ public class WorkflowExecutionMongoAdapter implements WorkflowExecutionPort {
      * {@inheritDoc}
      *
      * <p>A gravacao e um {@code $push}: o servidor acrescenta um elemento ao array e nao toca no
-     * resto do documento. Duas consequencias, ambas deliberadas e ambas registradas na
-     * {@code docs/adr/0004-execution-step-persistence.md}: a versao <b>nao</b> e incrementada (para
-     * um array so de acrescimos isso e aceitavel, porque o {@code $push} e atomico no servidor e
-     * dois passos concorrentes nao se sobrescrevem) e o {@code BeforeConvertCallback} <b>nao</b>
+     * resto do documento. E esse -- preservar o resto do documento -- o ganho real, e nao economia
+     * de bloqueio.</p>
+     *
+     * <p><b>A versao E incrementada.</b> O {@code updateFirst} do Spring Data adiciona um
+     * {@code $inc} na propriedade {@code @Version} de toda entidade versionada. A ADR 0004 supunha o
+     * contrario e a correcao 1 dela retrata isso; a suposicao errada custou caro, porque depois de N
+     * passos o documento fica na versao N enquanto o agregado em memoria continua na versao com que
+     * nasceu, e o {@code save} final -- que passa pelo bloqueio otimista -- e recusado. Toda execucao
+     * com um no sequer falhava. Por isso a
+     * {@link com.nexio.workflow.application.engine.WorkflowEngine} rele a execucao antes de gravar o
+     * estado terminal: <b>quem remover aquela releitura por parecer zelo desnecessario reintroduz o
+     * defeito</b>.</p>
+     *
+     * <p>O que o {@code $push} de fato dispensa e o {@code BeforeConvertCallback}, que <b>nao</b>
      * roda.</p>
      *
      * <p>O callback que nao roda e o motivo de a validacao aparecer explicitamente aqui. Ele e a

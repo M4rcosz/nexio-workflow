@@ -168,6 +168,16 @@ public final class SecretRedactor {
      *         nao e um URI
      */
     public static String redactUrl(String value) {
+        // O guarda de nulo nao e defensivo: sem ele todo no CONDITION derruba a leitura. O `url` de
+        // um no CONDITION e obrigatoriamente nulo -- a validacao por tipo o exige --, e
+        // `new URI(null)` lanca NullPointerException, e nao URISyntaxException, entao o catch mais
+        // abaixo nunca pegaria. O efeito era uma negacao de servico permanente e sem autenticacao:
+        // gravar um unico workflow com no CONDITION passava pela escrita e depois quebrava toda
+        // consulta `workflows`, que percorre as definicoes uma a uma -- inclusive a consulta que
+        // seria usada para achar e apagar o workflow envenenado.
+        if (value == null || value.isBlank()) {
+            return value;
+        }
         URI uri;
         try {
             uri = new URI(value);

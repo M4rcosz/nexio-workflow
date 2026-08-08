@@ -74,7 +74,7 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 enabled
                 startNodeId
                 trigger { type }
-                nodes { id type url headers config nextOnSuccess }
+                nodes { id type url method headers body expression config nextOnSuccess }
               }
             }
             """;
@@ -438,6 +438,48 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
         assertThat(storedHeadersOfFirstNode(id))
                 .containsEntry("Authorization", "Bearer super-secreto")
                 .containsEntry("Content-Type", "application/json");
+    }
+
+    /**
+     * Um workflow com no CONDITION e criado e <b>relido</b>, pelas duas consultas.
+     *
+     * <p>Este e o caminho que a suite inteira nao percorria. Todo teste que criava CONDITION o fazia
+     * para verificar uma recusa, e todos os fixtures de leitura usavam so nos HTTP_REQUEST -- entao
+     * nenhum {@code WorkflowNodeResponse} era construido com {@code url} nulo, que e obrigatorio num
+     * no CONDITION. A redacao roda no construtor desse DTO e chamava {@code new URI(null)}, que lanca
+     * NullPointerException e nao URISyntaxException: gravar um unico workflow assim quebrava
+     * permanentemente a consulta {@code workflows} para todo mundo, inclusive a consulta que seria
+     * usada para achar e apagar o workflow envenenado. Uma mutation anonima.</p>
+     */
+    @Test
+    void aWorkflowWithAConditionNodeCanBeReadBackByBothQueries() {
+        Map<String, Object> input = baseInput("com condicao");
+        input.put("startNodeId", "check");
+        input.put("nodes", List.of(
+                Map.of("id", "check", "type", "CONDITION", "expression", "#trigger['total'] > 100",
+                        "nextOnTrue", "grande", "nextOnFalse", "pequeno"),
+                Map.of("id", "grande", "type", "HTTP_REQUEST", "url", "https://exemplo.test/grande"),
+                Map.of("id", "pequeno", "type", "HTTP_REQUEST", "url", "https://exemplo.test/pequeno")));
+
+        String id = createWorkflow(input);
+
+        graphQlTester.document(READ_QUERY)
+                .variable("id", id)
+                .execute()
+                .path("workflow.nodes[0].expression")
+                .entity(String.class).isEqualTo("#trigger['total'] > 100")
+                .path("workflow.nodes[0].url")
+                .valueIsNull();
+
+        // A consulta de listagem percorre todas as definicoes: era ela que ficava quebrada para
+        // sempre depois de um unico workflow com no CONDITION gravado.
+        graphQlTester.document(LIST_QUERY)
+                .variable("limit", 20)
+                .variable("offset", 0)
+                .variable("enabledOnly", false)
+                .execute()
+                .path("workflows")
+                .entityList(Object.class).hasSize(1);
     }
 
     /**

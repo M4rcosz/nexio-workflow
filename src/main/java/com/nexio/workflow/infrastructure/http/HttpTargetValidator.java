@@ -164,10 +164,26 @@ public class HttpTargetValidator {
      * numerica. Nome que nao case com nenhum dos dois exige resolucao e fica para o disparo.</p>
      */
     private static boolean isIpLiteral(String host) {
-        return host.startsWith("[") || IPV4_LITERAL.matcher(host).matches();
+        return host.startsWith("[") || IP_LITERAL_CANDIDATE.matcher(host).matches();
     }
 
-    private static final Pattern IPV4_LITERAL = Pattern.compile("^\\d{1,3}(\\.\\d{1,3}){3}$");
+    /**
+     * Candidato a literal IP: qualquer host feito so de digitos e pontos, ou em hexadecimal.
+     *
+     * <p>O padrao anterior exigia os quatro octetos ({@code ^\d{1,3}(\.\d{1,3}){3}$}) e por isso
+     * deixava passar a forma decimal de 32 bits: {@code http://2852039166/} e
+     * {@code 169.254.169.254} escrito como um numero so. O {@link URI} devolve {@code "2852039166"}
+     * como host -- rotulo unico todo numerico e aceito pela gramatica --, o padrao antigo nao casava,
+     * nenhuma checagem de endereco rodava e a definicao era gravada apontando para o servico de
+     * metadados da nuvem.</p>
+     *
+     * <p>Por isso o criterio deixou de tentar reconhecer o formato e passou a ser o inverso: host so
+     * com digitos e pontos <b>nao pode</b> ser nome de DNS valido, entao vai para a checagem de
+     * endereco, que resolve sem consultar rede quando o valor e literal. Errar para o lado de
+     * checar custa nada; errar para o lado de nao checar custou este furo.</p>
+     */
+    private static final Pattern IP_LITERAL_CANDIDATE =
+            Pattern.compile("^[0-9.]+$|^0[xX][0-9a-fA-F]+$");
 
     private void validateScheme(URI uri, String rawUrl) {
         String scheme = uri.getScheme();
@@ -191,7 +207,7 @@ public class HttpTargetValidator {
         InetAddress[] addresses;
         try {
             addresses = InetAddress.getAllByName(host);
-        } catch (UnknownHostException e) {
+        } catch (UnknownHostException | IllegalArgumentException e) {
             throw reject(Reason.UNRESOLVABLE_HOST, "host nao resolvido: " + forLog(host));
         }
         if (addresses.length == 0) {

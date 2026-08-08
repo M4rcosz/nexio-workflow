@@ -1,6 +1,8 @@
 package com.nexio.workflow.infrastructure.http;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
@@ -193,5 +195,36 @@ class HttpTargetValidatorTest {
                 .isInstanceOf(HttpTargetNotAllowedException.class)
                 .extracting(thrown -> ((HttpTargetNotAllowedException) thrown).reason())
                 .isEqualTo(expected);
+    }
+
+    /**
+     * A forma decimal de 32 bits de um endereco interno e recusada tambem na escrita.
+     *
+     * <p>{@code 2852039166} e {@code 169.254.169.254} escrito como um numero so, e o
+     * {@link java.net.URI} devolve isso como host porque rotulo unico todo numerico e valido na
+     * gramatica. O reconhecimento de literal exigia os quatro octetos, entao esse host era tratado
+     * como nome, nenhuma checagem de endereco rodava e a definicao era gravada apontando para o
+     * servico de metadados da nuvem. Enquanto a issue #23 nao existe, a validacao de escrita e o
+     * unico portao de SSRF do sistema.</p>
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "http://2852039166/latest/meta-data/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1/admin",
+        "http://[::1]/admin"
+    })
+    void rejectsInternalLiteralTargetsWithoutResolvingNames(String url) {
+        HttpTargetValidator permissive = new HttpTargetValidator(true);
+        assertThatExceptionOfType(HttpTargetNotAllowedException.class)
+                .isThrownBy(() -> permissive.validateWithoutResolving(url));
+    }
+
+    /** Nome que precisa de DNS passa na escrita: quem o verifica e o disparo. */
+    @Test
+    void letsARealHostnameThroughTheResolutionFreeCheck() {
+        HttpTargetValidator permissive = new HttpTargetValidator(true);
+        assertThatCode(() -> permissive.validateWithoutResolving("https://api.exemplo.test/v1"))
+                .doesNotThrowAnyException();
     }
 }

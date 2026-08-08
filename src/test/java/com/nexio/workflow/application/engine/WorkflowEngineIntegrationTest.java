@@ -111,6 +111,47 @@ class WorkflowEngineIntegrationTest extends AbstractMongoIntegrationTest {
         return definition;
     }
 
+    /**
+     * Apagar a execucao no meio da caminhada nao deixa o registro preso em RUNNING.
+     *
+     * <p>E alcancavel hoje: apagar o workflow durante o disparo faz a cascata do
+     * {@code DeleteWorkflowUseCase} levar as execucoes junto. Antes da correcao o
+     * {@code appendStep} lancava {@code WorkflowNotFoundException}, o {@code recordStep} so pegava
+     * {@code InvalidWorkflowException}, e a excecao escapava do {@code execute()} inteiro: nenhum
+     * estado terminal era gravado, a execucao ficava RUNNING para sempre -- o orfao que a ADR 0005
+     * afirma nao existir no modelo sincrono -- e quem disparou recebia NOT_FOUND citando um id de
+     * execucao que nunca enviou.</p>
+     */
+    @Test
+    void anExecutionDeletedMidWalkEndsFailedInsteadOfEscapingAsAnException() {
+        WorkflowEngine engine = new WorkflowEngine(
+                List.of(new DeletingExecutor(executionPort)),
+                executionPort,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(30));
+
+        WorkflowExecution finished = engine.execute(definition(), Map.of());
+
+        assertThat(finished.getStatus()).isEqualTo(ExecutionStatus.FAILED);
+        assertThat(finished.getErrorMessage()).isNotBlank();
+        assertThat(executionPort.findById(finished.getId())).isEmpty();
+    }
+
+    /** Apaga a execucao antes de devolver, simulando a cascata de remocao do workflow. */
+    private record DeletingExecutor(WorkflowExecutionPort port) implements NodeExecutor {
+
+        @Override
+        public NodeType supportedType() {
+            return NodeType.HTTP_REQUEST;
+        }
+
+        @Override
+        public NodeExecutionResult execute(WorkflowNode node, NodeExecutionContext context) {
+            port.deleteByWorkflowId("wf-engine-integracao");
+            return NodeExecutionResult.success(Map.of());
+        }
+    }
+
     /** Executor de no que devolve sempre o mesmo resultado: o que esta sob teste e a engine. */
     private record FixedExecutor(NodeExecutionResult result) implements NodeExecutor {
 
