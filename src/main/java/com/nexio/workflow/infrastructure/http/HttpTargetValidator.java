@@ -7,6 +7,7 @@ import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.UnknownHostException;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -40,15 +41,14 @@ import org.slf4j.LoggerFactory;
  * {@link HttpTargetNotAllowedException}. O detalhe fica no log do servidor, com as strings de
  * origem externa higienizadas contra forja de linha de log.</p>
  *
- * <p><b>Limitacao conhecida (DNS rebinding):</b> esta e uma checagem de pre-voo. Entre a
- * resolucao feita aqui e a conexao aberta pelo cliente HTTP existe uma segunda resolucao de DNS,
- * e um servidor autoritativo hostil pode responder um endereco publico na primeira e
- * {@code 127.0.0.1} na segunda (TTL zero). Fechar essa janela exige fixar a conexao no IP ja
- * validado -- conectar no endereco aprovado e enviar o host original no cabecalho {@code Host} e
- * no SNI -- o que so pode ser feito onde o socket e realmente aberto. Isso fica adiado para o
- * Sprint 3, junto com o {@code HttpRequestNodeExecutor}. Ate la o validador reduz a superficie
- * (bloqueia URL interna direta e redirecionamento e recusado por
- * {@code HttpClient.Redirect.NEVER}), mas nao elimina o rebinding.</p>
+ * <p><b>DNS rebinding, fechado na issue #23.</b> Sozinha, esta checagem seria de pre-voo: entre a
+ * resolucao feita aqui e a conexao aberta pelo cliente existiria uma segunda resolucao, e um
+ * servidor autoritativo hostil responderia endereco publico na primeira e {@code 169.254.169.254}
+ * na segunda (TTL zero). Por isso {@link #validateAndResolve(String)} <b>devolve os enderecos</b>
+ * que aprovou, e o {@code HttpRequestNodeExecutor} os fixa no {@link PinnedDnsResolver} antes de
+ * fazer a requisicao: a segunda consulta deixa de existir. Quem chamar apenas
+ * {@link #validate(String)} descarta os enderecos e continua exposto ao rebinding -- e o motivo de
+ * o executor nao usar aquele metodo.</p>
  */
 public class HttpTargetValidator {
 
@@ -81,9 +81,33 @@ public class HttpTargetValidator {
      *         uma constante e nao repete nada da entrada
      */
     public URI validate(String url) {
+        return validateAndResolve(url).uri();
+    }
+
+    /**
+     * Valida a URL e devolve tambem os enderecos aprovados, para que a conexao seja fixada neles.
+     *
+     * <p>Existe porque descartar os enderecos ja resolvidos era o que deixava o DNS rebinding em
+     * aberto: quem so recebe a URI precisa resolver o host de novo na hora de conectar, e a segunda
+     * consulta pode responder outra coisa. Devolvendo os enderecos, o executor fixa a conexao no
+     * que foi aprovado -- ver {@link PinnedDnsResolver}.</p>
+     *
+     * @param url URL informada na configuracao do no
+     * @return URI validada e os enderecos que a checagem aprovou
+     * @throws HttpTargetNotAllowedException quando a URL viola alguma das regras
+     */
+    public ValidatedTarget validateAndResolve(String url) {
         URI uri = validateSyntax(url);
-        validateAddresses(uri.getHost());
-        return uri;
+        return new ValidatedTarget(uri, List.of(validateAddresses(uri.getHost())));
+    }
+
+    /**
+     * Destino aprovado.
+     *
+     * @param uri       URI validada
+     * @param addresses enderecos aprovados, todos publicos, nunca vazio
+     */
+    public record ValidatedTarget(URI uri, List<InetAddress> addresses) {
     }
 
     private URI validateSyntax(String url) {
@@ -203,7 +227,7 @@ public class HttpTargetValidator {
         throw reject(Reason.UNSUPPORTED_SCHEME, "esquema recusado: " + forLog(normalized));
     }
 
-    private void validateAddresses(String host) {
+    private InetAddress[] validateAddresses(String host) {
         InetAddress[] addresses;
         try {
             addresses = InetAddress.getAllByName(host);
@@ -220,6 +244,7 @@ public class HttpTargetValidator {
                                 + address.getHostAddress());
             }
         }
+        return addresses;
     }
 
     /**

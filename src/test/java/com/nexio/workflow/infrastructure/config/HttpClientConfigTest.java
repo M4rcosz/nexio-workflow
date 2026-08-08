@@ -13,12 +13,13 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,8 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.NestedExceptionUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.RestClient;
+import com.nexio.workflow.infrastructure.http.HttpRequestNodeExecutor;
+import com.nexio.workflow.infrastructure.http.PinnedDnsResolver;
 
 /**
  * Testes do cliente HTTP de saida.
@@ -40,8 +43,15 @@ import org.springframework.web.client.RestClient;
  *
  * <p>O que <b>nao</b> e coberto aqui: o tempo limite de leitura de 10s. Verifica-lo de verdade
  * exige um servidor que segure a resposta pelos 10s inteiros, o que deixaria a suite mais lenta
- * do que o valor do teste; ele e aplicado no {@code JdkClientHttpRequestFactory} e revisado por
+ * do que o valor do teste; ele e aplicado no {@code RequestConfig} do cliente e revisado por
  * leitura.</p>
+ *
+ * <p><b>Nota sobre a troca de cliente (issue #23).</b> O {@code CloseableHttpClient} do httpclient5
+ * nao expoe a propria configuracao para inspecao, ao contrario do {@code HttpClient} do JDK. As
+ * afirmacoes que antes eram feitas lendo propriedade do bean passaram a ser feitas por
+ * comportamento, contra o servidor de apoio -- que e uma forma melhor de afirma-las de qualquer
+ * modo: {@code followRedirects(NEVER)} nunca provou que um {@code 302} nao e seguido, so que a
+ * opcao estava marcada.</p>
  */
 class HttpClientConfigTest {
 
@@ -51,6 +61,7 @@ class HttpClientConfigTest {
     private static ExecutorService serverExecutor;
     private static String baseUrl;
     private static final AtomicInteger REDIRECT_TARGET_HITS = new AtomicInteger();
+    private static final AtomicReference<String> SENT_COOKIE = new AtomicReference<>();
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class,
@@ -65,6 +76,14 @@ class HttpClientConfigTest {
         server.createContext("/chunked-oversized", exchange -> respondChunked(exchange, OVER_LIMIT_BYTES));
         server.createContext("/declared-oversized", exchange -> respondWithLength(exchange,
                 "x".repeat(OVER_LIMIT_BYTES)));
+        server.createContext("/sets-cookie", exchange -> {
+            String cookie = exchange.getRequestHeaders().getFirst("Cookie");
+            if (cookie != null) {
+                SENT_COOKIE.set(cookie);
+            }
+            exchange.getResponseHeaders().add("Set-Cookie", "sessao=segredo; Path=/");
+            respondWithLength(exchange, "ok");
+        });
         server.createContext("/redirect", exchange -> {
             exchange.getResponseHeaders().add("Location", baseUrl + "/redirect-target");
             exchange.sendResponseHeaders(HttpStatus.FOUND.value(), -1);
@@ -86,24 +105,44 @@ class HttpClientConfigTest {
         serverExecutor.shutdownNow();
     }
 
-    // --- politicas do cliente do JDK ---
+    // --- politicas do cliente de saida ---
 
     @Test
     void shouldExposeHardenedHttpClientAndRestClient() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(RestClient.class)
-                    .hasSingleBean(HttpClient.class)
+                    .hasSingleBean(CloseableHttpClient.class)
+                    .hasSingleBean(PinnedDnsResolver.class)
                     .hasSingleBean(HttpTargetValidator.class)
+                    .hasSingleBean(HttpRequestNodeExecutor.class)
                     .hasSingleBean(ResponseSizeLimitInterceptor.class);
 
-            HttpClient httpClient = context.getBean(HttpClient.class);
-            assertThat(httpClient.followRedirects()).isEqualTo(HttpClient.Redirect.NEVER);
-            assertThat(httpClient.connectTimeout()).contains(HttpClientConfig.CONNECT_TIMEOUT);
-            assertThat(httpClient.cookieHandler()).isEmpty();
-            assertThat(httpClient.authenticator()).isEmpty();
-            assertThat(httpClient.proxy()).contains(HttpClient.Builder.NO_PROXY);
             assertThat(context.getBean(ResponseSizeLimitInterceptor.class).maxResponseBytes())
                     .isEqualTo(256 * 1024);
+        });
+    }
+
+    /**
+     * O {@code Set-Cookie} de uma resposta nao volta na requisicao seguinte.
+     *
+     * <p>Substitui, por comportamento, o que antes era afirmado lendo {@code cookieHandler()} do
+     * cliente do JDK. O risco e concreto e nao teorico: um cliente com armazenamento de cookies e
+     * estado compartilhado por todas as requisicoes de todos os workflows, entao o cookie de sessao
+     * que um no recebeu seria reenviado por um no de <i>outro</i> workflow, de outro dono, para
+     * outro host.</p>
+     */
+    @Test
+    void shouldNotCarryCookiesFromOneResponseIntoTheNextRequest() {
+        contextRunner.run(context -> {
+            RestClient restClient = context.getBean(RestClient.class);
+            SENT_COOKIE.set(null);
+
+            restClient.get().uri(baseUrl + "/sets-cookie").retrieve().toBodilessEntity();
+            restClient.get().uri(baseUrl + "/sets-cookie").retrieve().toBodilessEntity();
+
+            assertThat(SENT_COOKIE.get())
+                    .as("o cookie da primeira resposta voltou na segunda requisicao")
+                    .isNull();
         });
     }
 

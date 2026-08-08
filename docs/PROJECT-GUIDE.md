@@ -336,10 +336,11 @@ public class WorkflowEngineConfig {
 }
 ```
 
-Why not just `@Service` on `WorkflowEngine`? Because it needs a `List<NodeExecutor>`, and **no
-`NodeExecutor` exists yet** (they're issues #22 and #23). Spring refuses to inject an empty list by
-default, so the entire application would fail to start. `ObjectProvider` tolerates zero. A small
-detail that would otherwise have been a very confusing startup crash.
+Why not just `@Service` on `WorkflowEngine`? Because it needs a `List<NodeExecutor>`, and when the
+engine was written **no `NodeExecutor` existed yet** (they arrived in issues #22 and #23). Spring
+refuses to inject an empty list by default, so the entire application would have failed to start.
+`ObjectProvider` tolerates zero. Both executors exist now, but the choice stands: it was never about
+that particular day, it was about not letting a missing implementation stop the whole application.
 
 ### 3.3 Configuration files
 
@@ -790,6 +791,51 @@ limit, which is worse than a known absence of one.
 With the grammar closed, evaluation is linear in the size of the tree, and the tree is bounded by the
 512-character limit. The bound now follows from the design instead of from a clock.
 
+### 8.6 The HTTP executor, and what it stores
+
+`HttpRequestNodeExecutor` calls the URL and records what came back, always in the same shape:
+
+```
+{ statusCode: 200,
+  headers: { 'content-type': 'application/json' },
+  body: { ...the response... },
+  truncated: false,
+  droppedKeys: 0 }
+```
+
+Same shape on failure, deliberately: a `500` is the most interesting step in the whole execution, and
+storing the body only on success would throw away exactly the diagnostic someone needs. Non-2xx fails
+the node but keeps the body. A `3xx` also fails — redirects are **not** followed, because following
+one silently would bypass the destination validation entirely — and the `location` header is kept so
+the step is explainable.
+
+**The response body does not go through the strict `MapSanitizer`, and this was a real design
+problem.** The strict policy is correct for what a *user writes*: a key starting with `$` in a node's
+config is their mistake, and rejecting it at write time returns the error to someone who can fix it.
+A third-party response is none of that. Nobody on our side chose those keys, and the rejection
+doesn't reach anyone who could change them — it arrives as a **failed execution**, after the call
+already succeeded and the side effect on the other side already happened.
+
+And it isn't a rare case. Measured against what real APIs return: `_links` and `_embedded` from any
+HAL API are rejected (keys can't start with `_`), `$ref` and `$schema` from JSON Schema (the `$`),
+any body over 200 total entries — which fits comfortably in the 256 KB the client accepts — and the
+`BigInteger` Jackson produces for a large integer isn't an allowed scalar type.
+
+So `ExternalDataSanitizer` **repairs instead of rejecting**: unstorable keys are dropped, long strings
+truncated, entry and depth budgets enforced, `BigInteger` converted to `BigDecimal`. Whatever is lost
+is counted in `droppedKeys` and `truncated`, so the loss shows up in the step rather than the history
+displaying an object that looks complete. Keys are **dropped, not renamed** — an escaping scheme
+(`_links` becoming `u_links`) collides when both names exist and becomes API surface that expression
+authors have to memorise.
+
+The test that matters for that class is a property, not an example: for any input, the output passes
+`MapSanitizer.validate`. It caught two real defects while being written, the better one being that
+returning an *empty map* at the depth limit doesn't help — an empty map is still a map, so it lands
+one level too deep and gets rejected anyway. The over-deep node has to be dropped entirely.
+
+Of the response headers, only a short allow-list is kept. `set-cookie` and credential echoes never
+reach storage — the difference between an allow-list and `SecretRedactor`, which is a block-list by
+name and therefore stores anything it wasn't told about.
 ---
 
 ## 9. Security: every concept in this codebase
@@ -850,9 +896,31 @@ allowed. It checks **every** address a hostname resolves to, because a hostname 
 Its error messages deliberately carry **no** detail — an unresolvable host and a blocked address
 produce *identical* text, so the error can't be used as a scanner to map the internal network.
 
-**DNS rebinding** remains open, and is worth understanding: an attacker's domain can answer with a
-harmless address when we validate, then an internal one moments later when we connect. The only real
-fix is to validate, then connect to *the exact IP already validated*. That's required work in #23.
+**DNS rebinding — closed in #23, and the most instructive attack here.** Everything above is a
+*pre-flight* check, and on its own it doesn't work, because the HTTP client resolves the hostname
+**again** when it opens the connection. Two lookups. An attacker who controls the domain's DNS server
+controls both: publish the record with a zero-second TTL, answer with a public address for the
+validation and `169.254.169.254` for the connection. The check passes and the connection goes to the
+cloud metadata service.
+
+The only real fix is to **resolve once**: validate the addresses, then connect to exactly those. That
+has to happen where the socket is opened — inside the HTTP client.
+
+Which is why this issue changed the outbound client. The JDK's `HttpClient` has **no extension point
+for name resolution** — no `DnsResolver`, nothing. Apache HttpClient 5 has one, so the project moved
+to it and installed `PinnedDnsResolver`. The executor's order is now **validate, pin, call**, with
+the pin cleared in a `finally` block — server threads are reused, and a forgotten pin would make the
+next execution on that thread connect to an address validated for *someone else's workflow*.
+
+Note what is pinned: the **address**, not the name. The request still goes to the original hostname,
+so TLS certificate verification and SNI still check the name the author wrote. An attacker who
+redirects the address does not thereby obtain a valid certificate for that name. The naive version of
+this fix — rewriting the URL to the IP — breaks exactly that, and "fixing" it means disabling
+hostname verification, which trades one hole for a worse one.
+
+The test for this is written backwards, which is the only honest way to test it: the DNS resolver in
+that test **refuses every name**. If a request reaches the server at all, the only possible
+explanation is that the connection used the pinned address. See ADR 0007.
 
 We now also validate at **write** time (when the workflow is created) — but only the parts that don't
 need DNS, plus literal IPs. Full resolution at write time would make workflow creation depend on the
@@ -923,7 +991,7 @@ the honest cost. What it buys is that the future check lands in one place instea
 
 ## 10. Testing, and why counting tests lies
 
-371 tests pass. Types used here:
+416 tests pass. Types used here:
 
 - **Unit tests** — one class, dependencies faked. Fast.
 - **Slice tests** — one layer with real framework (`@DataMongoTest`, `@GraphQlTest`).
@@ -970,6 +1038,7 @@ undo it without understanding it. They're in `docs/adr/`.
 | 0004 | `appendStep` with `$push` | Re-saving per step is quadratic. But `$push` skips the validation seam, so the port method must validate itself. |
 | 0005 | Synchronous execution | Async silently swallows exceptions, leaving executions stuck at RUNNING forever, needing a reaper. |
 | 0006 | Actor seam | Thread the actor now while there are five use cases, not later when there are eight. |
+| 0007 | Outbound HTTP client | The JDK client has no DNS extension point, so the connection could not be pinned to the validated address — leaving DNS rebinding open. Moved to Apache HttpClient 5 for its `DnsResolver`. |
 
 **ADRs 0003, 0004 and 0005 all have correction sections**, because reality disagreed with them. The
 original reasoning is kept next to what it got wrong — that's more useful than a document that
@@ -1032,14 +1101,10 @@ Covered in §9.1. A normal read-edit-save cycle destroyed credentials.
 **Done:** domain model with graph validation; MongoDB persistence with indexes, optimistic locking
 and auditing; hardened outbound HTTP client with SSRF validation; full CRUD use cases; GraphQL API;
 query cost limits; secret redaction; the workflow engine and its extension point; the CONDITION
-executor with a closed expression grammar; 371 tests.
+executor with a closed expression grammar; the HTTP executor with DNS-rebinding protection; 416
+tests.
 
 **Left in Sprint 3:**
-- **#23** HTTP executor — must validate at runtime *and* pin the connection to the validated IP
-  (DNS rebinding). One thing has to be settled before writing it: the strict `MapSanitizer` policy
-  would reject ordinary third-party responses — `_links` in any HAL API, bodies over ~200 keys, any
-  string over 4KB — and the engine turns that rejection into a failed workflow. So the shape of what
-  a response node stores has to be decided first, not discovered later.
 - **#24–#26** execution use cases, mock trigger endpoint, and the resolver that re-exposes execution
   queries in the schema.
 
@@ -1048,7 +1113,6 @@ index; owner-scoped port methods; rate limiting; scheduler.
 
 **Known open items:**
 - No authentication at all.
-- DNS rebinding not closed.
 - No rate limiting.
 - `ExecutionStep.output` will need its own redaction when exposed (#26) — it will contain third-party
   response bodies, which are the least trustworthy data in the system.

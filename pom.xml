@@ -39,6 +39,20 @@
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
 
+    <!--
+      Cliente HTTP de saida dos nos de workflow. Nao esta aqui por preferencia: o HttpClient do JDK
+      nao expoe ponto de extensao para resolucao de nome, e sem isso nao ha como fixar a conexao no
+      endereco que a validacao de SSRF aprovou. Entre validar e conectar o JDK resolve o host uma
+      segunda vez, e um servidor de DNS hostil com TTL zero devolve endereco publico na primeira e
+      169.254.169.254 na segunda (DNS rebinding), que anula a validacao inteira. O httpclient5 tem
+      um DnsResolver por cliente, que e o ponto de extensao feito exatamente para isto.
+      Versao gerenciada pelo spring-boot-dependencies; nao fixar aqui.
+    -->
+    <dependency>
+      <groupId>org.apache.httpcomponents.client5</groupId>
+      <artifactId>httpclient5</artifactId>
+    </dependency>
+
     <!-- GraphQL -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
