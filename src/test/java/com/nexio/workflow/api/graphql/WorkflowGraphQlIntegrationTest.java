@@ -542,6 +542,52 @@ class WorkflowGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
     }
 
     /**
+     * A expressao que faria a avaliacao custar minutos e recusada na criacao, e nada e gravado.
+     *
+     * <p>Vale o caminho inteiro, e nao so a unidade: estas quatro selecoes aninhadas tem 84
+     * caracteres, passam pelo teto de tamanho da expressao e avaliaram por 49 segundos contra uma
+     * lista de 200 itens. Como {@code createWorkflow} e o disparo sao anonimos, um workflow gravado
+     * com ela seria negacao de servico sem autenticacao a cada execucao. O que a recusa aqui prova
+     * e que a validacao de gramatica esta ligada na fronteira de escrita da API, e nao apenas
+     * disponivel numa classe que ninguem chama.</p>
+     *
+     * <p>A segunda expressao mostra que o payload nao e a fonte do problema: com lista literal a
+     * mesma iteracao existe sem dado de entrada nenhum.</p>
+     */
+    @Test
+    void createWorkflowRejectsAnExpressionThatWouldTakeMinutesToEvaluate() {
+        String bomb = "#t['i'].?[#t['i'].?[#t['i'].?[#t['i'].?[true].size>0].size>0].size>0].size>0";
+        assertCreateFailsWith(conditionInput("bomba de selecao", bomb), "selecao");
+
+        assertCreateFailsWith(
+                conditionInput("bomba sem payload", "{1,2,3}.?[{1,2,3}.?[true].size>0].size>0"),
+                "selecao");
+
+        assertThat(definitions().countDocuments()).isZero();
+    }
+
+    /** Execucao remota de codigo recusada na criacao, antes de chegar ao contexto de avaliacao. */
+    @Test
+    void createWorkflowRejectsAnExpressionThatReachesForTheRuntime() {
+        assertCreateFailsWith(
+                conditionInput("rce", "T(java.lang.Runtime).getRuntime().exec('id') != null"),
+                "T(...)");
+
+        assertThat(definitions().countDocuments()).isZero();
+    }
+
+    /** Um workflow minimo cuja unica variavel e a expressao do no CONDITION. */
+    private static Map<String, Object> conditionInput(String name, String expression) {
+        Map<String, Object> input = baseInput(name);
+        input.put("nodes", List.of(
+                Map.of("id", "check", "type", "CONDITION", "expression", expression,
+                        "nextOnTrue", "fim", "nextOnFalse", "fim"),
+                Map.of("id", "fim", "type", "HTTP_REQUEST", "url", "https://exemplo.test")));
+        input.put("startNodeId", "check");
+        return input;
+    }
+
+    /**
      * Os campos promovidos sao gravados com o proprio nome, e nao dentro de {@code config}.
      *
      * <p>Trava a migracao de forma verificavel: se alguem reverter o mapeamento e voltar a empurrar

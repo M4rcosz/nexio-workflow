@@ -74,6 +74,28 @@ type WorkflowNode {
   # Condicao avaliada pelos nos CONDITION; nula nos demais, que a recusam. Declarada e nao guardada
   # em `config` porque o dominio precisa valida-la na escrita, e nao valida o que nao ve --
   # ver docs/adr/0002-spel-sandbox.md.
+  #
+  # O objeto raiz e o payload do gatilho, entao o caso comum se escreve direto:
+  #
+  #     total > 100 and status == 'pago'
+  #
+  # A saida de um no ja executado vem por `#outputs`, indexada pelo id do no; `#trigger` e o mesmo
+  # mapa da raiz, para quem prefere dizer de onde o dado veio:
+  #
+  #     #outputs['consulta-cliente']['statusCode'] == 200
+  #
+  # A gramatica aceita e fechada, e conferida na escrita: literais, `and`/`or`/`!`, comparacao,
+  # aritmetica, ternario, elvis, leitura de campo e indexacao. Ficam de fora selecao `?[...]`,
+  # projecao `![...]`, lista e mapa literais, `matches`, potencia, chamada de metodo, `new`,
+  # `T(...)`, `@bean`, funcao e atribuicao -- e tambem qualquer construto que uma versao futura do
+  # SpEL venha a introduzir, porque a regra e lista de permissao. Metodo e tipo saem por seguranca
+  # (`T(java.lang.Runtime)` seria execucao remota de codigo); selecao, projecao e `matches` saem por
+  # custo -- 84 caracteres de selecao aninhada avaliaram por 49 segundos.
+  #
+  # Uma expressao que nao compila ou que usa construto proibido e BAD_REQUEST na escrita, e nao
+  # falha no disparo. Ja o erro de avaliacao -- campo ausente, divisao por zero, resultado que nao e
+  # booleano -- e falha do no em tempo de execucao: a condicao que nao pode ser avaliada nunca vira
+  # o ramo falso, porque isso faria a execucao parecer que decidiu.
   expression: String
 
   # Sobra para o que e especifico do no e que o dominio nao precisa inspecionar. O criterio: se o

@@ -21,6 +21,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.data.mongo.DataMongoTest;
 import org.springframework.context.annotation.Import;
@@ -135,6 +137,49 @@ class WorkflowEngineIntegrationTest extends AbstractMongoIntegrationTest {
         assertThat(finished.getStatus()).isEqualTo(ExecutionStatus.FAILED);
         assertThat(finished.getErrorMessage()).isNotBlank();
         assertThat(executionPort.findById(finished.getId())).isEmpty();
+    }
+
+    /**
+     * Um no CONDITION real escolhe o ramo, e a caminhada segue por ele.
+     *
+     * <p>Os testes de unidade do executor conferem o desfecho que ele devolve e os testes de
+     * unidade da engine conferem a aresta que ela escolhe para cada desfecho, cada um com o outro
+     * lado dublado. O que nenhum dos dois cobre e a juncao: que o {@code CONDITION_TRUE} produzido
+     * pelo executor de verdade e o mesmo que a engine de verdade traduz em {@code nextOnTrue}. E a
+     * mesma lacuna entre camadas que deixou passar o conflito de versao.</p>
+     */
+    @ParameterizedTest
+    @CsvSource({"150, ramo-verdadeiro", "10, ramo-falso"})
+    void aRealConditionNodeSteersTheWalkDownTheBranchItChose(int total, String expectedSecondStep) {
+        WorkflowEngine engine = new WorkflowEngine(
+                List.of(new ConditionNodeExecutor(),
+                        new FixedExecutor(NodeExecutionResult.success(Map.of("statusCode", 200)))),
+                executionPort,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(30));
+
+        WorkflowExecution finished = engine.execute(branchingDefinition(), Map.of("total", total));
+
+        assertThat(finished.getStatus()).isEqualTo(ExecutionStatus.SUCCESS);
+        assertThat(finished.getSteps()).extracting(step -> step.nodeId())
+                .containsExactly("checa", expectedSecondStep);
+        assertThat(finished.getSteps().getFirst().output())
+                .containsEntry("result", total > 100);
+    }
+
+    private static WorkflowDefinition branchingDefinition() {
+        WorkflowDefinition definition = new WorkflowDefinition();
+        definition.setId("wf-condicao-integracao");
+        definition.setName("condicao escolhe o ramo");
+        definition.setNodes(List.of(
+                WorkflowNode.condition("checa", "total > 100", "ramo-verdadeiro", "ramo-falso"),
+                WorkflowNode.httpRequest("ramo-verdadeiro", "https://exemplo.test/caro",
+                        HttpMethod.POST, null, null, null),
+                WorkflowNode.httpRequest("ramo-falso", "https://exemplo.test/barato",
+                        HttpMethod.POST, null, null, null)));
+        definition.setStartNodeId("checa");
+        definition.validateGraph();
+        return definition;
     }
 
     /** Apaga a execucao antes de devolver, simulando a cascata de remocao do workflow. */

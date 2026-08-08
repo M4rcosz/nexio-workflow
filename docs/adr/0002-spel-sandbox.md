@@ -2,7 +2,8 @@
 
 ## Status
 
-Aceito -- 2026-08-07. Vale a partir da issue #22 (`ConditionNodeExecutor`), ainda nao implementada.
+Aceito -- 2026-08-07. Implementado na issue #22 (`ConditionNodeExecutor`), com as correcoes
+registradas no fim deste documento.
 
 ## Contexto
 
@@ -60,3 +61,60 @@ implementacao do executor e escolher sob pressao de fazer o teste passar.
 - **Avaliar em sandbox de `SecurityManager`.** Depreciado e a caminho da remocao no JDK.
 - **Recusar SpEL e escrever um interpretador proprio.** Defensavel, e mais trabalho do que o
   problema pede enquanto `SimpleEvaluationContext` resolve.
+
+## Correcoes feitas na implementacao (2026-08-08)
+
+A decisao central -- nunca `StandardEvaluationContext` -- se sustentou: `T(java.lang.Runtime)`,
+`''.getClass()` e `new ...` foram todos verificados contra `SimpleEvaluationContext` e morrem la.
+O que nao sobreviveu foi o raciocinio sobre custo.
+
+**1. O item 4 estava errado, e era a unica coisa que segurava o custo da avaliacao.** "A avaliacao e
+limitada no tempo pela engine" nao e verdade: o teto de tempo da engine e conferido *entre* nos e
+nunca interrompe um no em andamento -- o proprio Javadoc da engine ja dizia isso. Com o item 4 fora,
+nao restava limite nenhum, e o item 3 (teto de tamanho) nao serve para esse fim. Medido:
+
+```
+#t['i'].?[#t['i'].?[#t['i'].?[#t['i'].?[true].size>0].size>0].size>0].size>0
+```
+
+Sao 84 caracteres, contra os 512 permitidos, e a avaliacao levou **49 segundos** numa lista de 200
+itens. Selecao aninhada e exponencial: o nivel seguinte custaria cerca de duas horas e meia. Pior do
+que o numero e a origem dos dados -- `{1,2,3}.?[...]` reproduz a mesma iteracao com lista literal,
+sem payload nenhum, entao os limites do `MapSanitizer` sobre o que entra nao ajudam. Como
+`createWorkflow` e o disparo sao anonimos hoje, era negacao de servico sem autenticacao.
+
+**2. O `SimpleEvaluationContext` limita o que a expressao alcanca, nao quanto ela custa.** Vale
+dizer explicitamente porque a ADR original tratava a escolha do contexto como se resolvesse a
+questao inteira. Sao dois problemas distintos, e o contexto resolve so o primeiro.
+
+**3. A resposta e uma lista de permissao de construtos, conferida na escrita.** O
+`ConditionExpressionValidator` percorre a arvore que o parser produziu e recusa todo tipo de no que
+nao esteja na lista: sobram literais, operadores logicos e aritmeticos, comparacao, ternario, elvis,
+leitura de propriedade, indexacao e referencia a variavel. Saem selecao `?[...]`, projecao `![...]`,
+lista e mapa literais, chamada de metodo, construtor, referencia de tipo, referencia a bean, funcao
+e atribuicao. Com isso a avaliacao passa a ser linear no tamanho da arvore, que ja e limitada pelo
+item 3 -- ou seja, o item 4 deixa de ser necessario em vez de ser consertado.
+
+A polaridade e deliberada: **o construto desconhecido e recusado**. Um tipo de no novo numa versao
+futura do SpEL chega aqui bloqueado por padrao. E o mesmo argumento que a secao de alternativas
+descartadas usa contra lista de bloqueio de tipos, aplicado um nivel acima.
+
+**4. `matches` sai junto, por motivo proprio.** Nao itera sobre colecao, mas o padrao e o texto
+comparado vem os dois de quem escreve, e `'aaaaaaaaaaaaaaaaaaaaaa' matches '(a+)+$'` e retrocesso
+catastrofico em vinte caracteres. E a unica recusa da lista que custa algo util; se voltar, volta
+como operador de comparacao de texto modelado no dominio, e nao como expressao regular livre.
+
+**5. Avaliar com timeout foi considerado e recusado.** `Thread.interrupt()` nao interrompe um laco
+de selecao do SpEL: a thread abandonada continuaria queimando um nucleo ate terminar sozinha, e
+disparos repetidos esgotariam o pool do mesmo jeito. Seria a aparencia de um limite sem o limite.
+
+**6. O item 2 esta implementado, e com escopo maior do que o descrito.** O parse na escrita nao
+serve so para recusar expressao malformada: e ele que da a arvore em que a lista de permissao e
+aplicada. Roda no `validateGraph()` da definicao, ou seja, no `createWorkflow` e no
+`updateWorkflow`.
+
+**7. Uma coisa que a ADR nao previu: o SpEL nao embrulha tudo o que a avaliacao lanca.**
+`total / 0` sai como `ArithmeticException` crua, sem passar por `SpelEvaluationException` --
+descoberto por teste, e alcancavel com `total / quantidade` e um payload com quantidade zero. O
+executor captura `RuntimeException` por isso, para que divisao por zero vire falha de no com o no
+nomeado, e nao a mensagem generica da rede de seguranca da engine.

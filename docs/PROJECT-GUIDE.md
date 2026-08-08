@@ -698,6 +698,98 @@ safely kill a thread. What it does is check the clock **before starting each nod
 Real worst case: `cap + one node's duration` = 30s + 10s. That's written in the code's documentation
 and pinned by a test, rather than letting the config value imply a guarantee it doesn't provide.
 
+### 8.4 The condition executor
+
+`ConditionNodeExecutor` evaluates a CONDITION node's expression and reports which branch won. The
+expression language is **SpEL** (Spring Expression Language), and the trigger payload is the root
+object, so the common case reads naturally:
+
+```
+total > 100 and status == 'pago'
+```
+
+A prior node's output comes through the `#outputs` variable, keyed by node id:
+
+```
+#outputs['consulta-cliente']['statusCode'] == 200
+```
+
+**A condition that cannot be evaluated fails the node — it never becomes the false branch.** Missing
+field, division by zero, a result that isn't `true`/`false`: all FAILURE. This is worth sitting with,
+because taking the false branch looks like the friendlier choice. It isn't. A workflow that charges a
+customer when `total > 100` and then fails to read `total` would quietly run the "don't charge"
+branch, indistinguishable in the history from a genuinely cheap order. Nobody would ever find out.
+Failing writes the reason into the step and marks the execution FAILED.
+
+The step's output records the boolean. It is the only thing the node produces, and it's what answers
+"why did the execution go that way?" when someone opens the history a month later.
+
+### 8.5 Why the expression language is deliberately crippled
+
+This is the most interesting security decision in the project, and it took two rounds to get right.
+
+SpEL is a **full expression language**. Evaluated with Spring's default `StandardEvaluationContext`,
+this one line is remote code execution:
+
+```
+T(java.lang.Runtime).getRuntime().exec("...")
+```
+
+Anyone who can call `createWorkflow` — which, today, is anyone — could run commands on the server.
+ADR 0002 decided the answer up front: use `SimpleEvaluationContext`, which resolves no types, calls
+no constructors and invokes no methods. That part held up. I verified it by running it.
+
+**But the ADR also claimed the engine bounds evaluation time, and that was simply false.** The time
+cap is checked *between* nodes (see §8.3) — it cannot stop a node already running. With that claim
+removed, nothing limited cost at all. Here is what that meant, measured:
+
+```
+#t['i'].?[#t['i'].?[#t['i'].?[#t['i'].?[true].size>0].size>0].size>0].size>0
+```
+
+84 characters, against a 512-character limit. **49 seconds** of evaluation. One more level of nesting
+would be about two and a half hours. And `{1,2,3}.?[...]` does the same thing with a literal list, so
+it needs no input data — meaning the limits on what payloads may contain don't help.
+
+The `?[...]` operator is *selection*: "keep the elements matching this". Nesting it makes each level
+walk the whole list once per element of the level above, which is exponential.
+
+So the fix isn't a limit on time — it's a limit on **grammar**. `ConditionExpressionValidator` walks
+the parse tree when the workflow is saved and rejects anything not on a closed allow-list:
+
+| Allowed | Rejected |
+| --- | --- |
+| literals, `and` `or` `!` | selection `?[...]`, projection `![...]` |
+| `>` `<` `==` `!=` `>=` `<=` | list `{1,2}` and map `{a:1}` literals |
+| `+` `-` `*` `/` `%` | method calls, `new`, `T(...)`, `@bean` |
+| ternary, elvis | functions, assignment |
+| field read, indexing, `#variables` | `matches`, `^` |
+
+Three things about this are worth understanding, because they generalise well beyond SpEL:
+
+**It's an allow-list, not a block-list.** Anything not named is rejected — including constructs that
+don't exist yet. If a future Spring release adds a new operator, it arrives blocked. A block-list
+would arrive open. When you're guarding a grammar someone else controls, this is the only polarity
+that ages safely.
+
+**Checking at write time costs nothing at runtime.** The parse happens once, when the workflow is
+saved, and the author gets a `BAD_REQUEST` while the expression is still on their screen — rather
+than a mysterious failure on trigger number 4000. Parsing is not evaluating: building the tree runs
+nothing.
+
+**`matches` is rejected for a different reason than the rest.** It doesn't iterate. But the regex
+*and* the text are both attacker-supplied, and `'aaaaaaaaaaaaaaaaaaaaaa' matches '(a+)+$'` is
+catastrophic backtracking in twenty characters. Same outcome, different mechanism.
+
+The alternative — "evaluate with a timeout" — was considered and rejected, and the reason is a good
+lesson. `Thread.interrupt()` does **not** stop a SpEL selection loop. Java has no safe way to kill a
+thread. The timeout would return promptly while the abandoned thread kept burning a core to
+completion, and repeated triggers would exhaust the pool anyway. It would be the *appearance* of a
+limit, which is worse than a known absence of one.
+
+With the grammar closed, evaluation is linear in the size of the tree, and the tree is bounded by the
+512-character limit. The bound now follows from the design instead of from a clock.
+
 ---
 
 ## 9. Security: every concept in this codebase
@@ -831,7 +923,7 @@ the honest cost. What it buys is that the future check lands in one place instea
 
 ## 10. Testing, and why counting tests lies
 
-296 tests pass. Types used here:
+371 tests pass. Types used here:
 
 - **Unit tests** — one class, dependencies faked. Fast.
 - **Slice tests** — one layer with real framework (`@DataMongoTest`, `@GraphQlTest`).
@@ -873,7 +965,7 @@ undo it without understanding it. They're in `docs/adr/`.
 | ADR | Decision | Why |
 |---|---|---|
 | 0001 | No multi-tenancy | `tenantId` came from the client, so it isolated nothing. Fake isolation is worse than declared absence. |
-| 0002 | SpEL sandbox | Expressions are user input. The obvious implementation is one-line remote code execution. Read-only context, validated at write time. |
+| 0002 | SpEL sandbox | Expressions are user input. The obvious implementation is one-line remote code execution. Read-only context, plus a closed grammar checked at write time — the original ADR bounded *reach* but not *cost*, and 84 characters ran for 49 seconds. |
 | 0003 | Typed node fields | Validation only sees what's declared. `url` in a free-form map is invisible to the SSRF validator. |
 | 0004 | `appendStep` with `$push` | Re-saving per step is quadratic. But `$push` skips the validation seam, so the port method must validate itself. |
 | 0005 | Synchronous execution | Async silently swallows exceptions, leaving executions stuck at RUNNING forever, needing a reaper. |
@@ -918,7 +1010,18 @@ adding an integration test against a real database.
 
 Covered in §5.1. Queries silently matched nothing.
 
-### 12.5 Redaction round-trip
+### 12.5 An 84-character expression that ran for 49 seconds
+
+Found while implementing #22, by measuring instead of trusting the design document. ADR 0002 listed
+four protections for condition expressions; the fourth — "evaluation is time-bounded by the engine" —
+was the only one addressing cost, and it was false. The engine's cap is checked between nodes.
+
+What makes this one instructive is that the ADR wasn't careless. It reasoned carefully about *reach*
+(what the expression can touch) and then treated the question as settled, without noticing that
+*cost* is a separate axis. `SimpleEvaluationContext` genuinely stops `Runtime.exec`. It has nothing
+to say about how long a loop runs. Full detail in §8.5.
+
+### 12.6 Redaction round-trip
 
 Covered in §9.1. A normal read-edit-save cycle destroyed credentials.
 
@@ -928,13 +1031,15 @@ Covered in §9.1. A normal read-edit-save cycle destroyed credentials.
 
 **Done:** domain model with graph validation; MongoDB persistence with indexes, optimistic locking
 and auditing; hardened outbound HTTP client with SSRF validation; full CRUD use cases; GraphQL API;
-query cost limits; secret redaction; the workflow engine and its extension point; 296 tests.
+query cost limits; secret redaction; the workflow engine and its extension point; the CONDITION
+executor with a closed expression grammar; 371 tests.
 
 **Left in Sprint 3:**
-- **#22** CONDITION executor — must use `SimpleEvaluationContext.forReadOnlyDataBinding()`. A default
-  SpEL context is remote code execution.
 - **#23** HTTP executor — must validate at runtime *and* pin the connection to the validated IP
-  (DNS rebinding).
+  (DNS rebinding). One thing has to be settled before writing it: the strict `MapSanitizer` policy
+  would reject ordinary third-party responses — `_links` in any HAL API, bodies over ~200 keys, any
+  string over 4KB — and the engine turns that rejection into a failed workflow. So the shape of what
+  a response node stores has to be decided first, not discovered later.
 - **#24–#26** execution use cases, mock trigger endpoint, and the resolver that re-exposes execution
   queries in the schema.
 

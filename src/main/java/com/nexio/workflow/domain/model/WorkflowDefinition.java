@@ -404,6 +404,9 @@ public class WorkflowDefinition {
                     "expression do no '" + node.nodeId() + "' excede "
                             + MAX_EXPRESSION_LENGTH + " caracteres");
         }
+        // O teto de tamanho vem antes de proposito: e a conferencia barata, e nenhuma expressao
+        // acima dele chega a ser analisada. A gramatica so e conferida no que ja passou pelo teto.
+        ConditionExpressionValidator.validate(node.expression(), node.nodeId());
         requireAbsent(node.url() == null, node, "url");
         requireAbsent(node.method() == null, node, "method");
         requireAbsent(node.headers().isEmpty(), node, "headers");
