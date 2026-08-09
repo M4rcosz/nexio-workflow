@@ -21,15 +21,23 @@ public interface WorkflowExecutionMongoRepository extends MongoRepository<Workfl
      * preenchido em {@code markRunning}, e como o nulo ordena como menor valor no MongoDB, uma
      * execucao recem criada (PENDING) apareceria por ultimo na lista de mais recentes.</p>
      *
-     * <p>A ordenacao casa exatamente com o indice composto {@code exec_workflow_created}
-     * ({@code {workflowId: 1, createdAt: -1}}) declarado na entidade, entao a consulta e coberta
-     * pelo indice e nao exige ordenacao em memoria.</p>
+     * <p><b>O desempate por {@code _id} faz parte do contrato, e nao e detalhe.</b>
+     * {@code createdAt} nao e unico: varios disparos do mesmo workflow caem no mesmo instante, e
+     * ordenacao com empate nao tem ordem definida. Como esta consulta e paginada por
+     * {@code skip}/{@code limit}, duas paginas consecutivas poderiam repetir uma execucao e pular
+     * outra -- e o cliente nao teria como perceber a perda. O {@code _id} torna a ordem total.</p>
+     *
+     * <p>A ordenacao casa exatamente com o indice composto {@code exec_workflow_created_id}
+     * ({@code {workflowId: 1, createdAt: -1, _id: -1}}) declarado na entidade, entao a consulta e
+     * coberta pelo indice e nao exige ordenacao em memoria. Tirar o {@code _id} de um dos dois
+     * lados -- da ordem ou do indice -- troca a leitura ordenada por ordenacao em memoria.</p>
      *
      * @param workflowId identificador da definicao de workflow
      * @param pageable   recorte da consulta
-     * @return lista de execucoes ordenada por {@code createdAt} decrescente, vazia quando nao ha registros
+     * @return lista de execucoes ordenada por {@code createdAt} decrescente e {@code _id}
+     *         decrescente, vazia quando nao ha registros
      */
-    List<WorkflowExecution> findByWorkflowIdOrderByCreatedAtDesc(String workflowId, Pageable pageable);
+    List<WorkflowExecution> findByWorkflowIdOrderByCreatedAtDescIdDesc(String workflowId, Pageable pageable);
 
     /**
      * Lista as execucoes em um determinado estado.

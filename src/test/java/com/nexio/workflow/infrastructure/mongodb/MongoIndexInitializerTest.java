@@ -43,7 +43,7 @@ class MongoIndexInitializerTest extends AbstractMongoIntegrationTest {
         assertThat(indexNames(DEFINITIONS_COLLECTION))
                 .containsExactlyInAnyOrder("_id_", "def_enabled_trigger", "def_trigger_type");
         assertThat(indexNames(EXECUTIONS_COLLECTION))
-                .containsExactlyInAnyOrder("_id_", "exec_workflow_created", "exec_status_created");
+                .containsExactlyInAnyOrder("_id_", "exec_workflow_created_id", "exec_status_created");
 
         assertThatCode(() -> initializer.run(new DefaultApplicationArguments())).doesNotThrowAnyException();
 

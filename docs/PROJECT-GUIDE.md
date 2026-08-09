@@ -991,7 +991,7 @@ the honest cost. What it buys is that the future check lands in one place instea
 
 ## 10. Testing, and why counting tests lies
 
-416 tests pass. Types used here:
+447 tests pass. Types used here:
 
 - **Unit tests** — one class, dependencies faked. Fast.
 - **Slice tests** — one layer with real framework (`@DataMongoTest`, `@GraphQlTest`).
@@ -1090,7 +1090,19 @@ What makes this one instructive is that the ADR wasn't careless. It reasoned car
 *cost* is a separate axis. `SimpleEvaluationContext` genuinely stops `Runtime.exec`. It has nothing
 to say about how long a loop runs. Full detail in §8.5.
 
-### 12.6 Redaction round-trip
+### 12.6 A response type that could never be serialised
+
+Small, but a good illustration of what integration tests are for. The GraphQL `DateTime` scalar
+serialises `OffsetDateTime` and **rejects** `Instant` — and the existing `WorkflowDefinitionResponse`
+documents this in a comment, having been bitten once already. I wrote the new execution response
+records with `Instant` fields anyway.
+
+Nothing caught it until a query actually ran: it compiles, the objects construct fine, and the
+failure only happens when the scalar is asked to serialise a selected field. Every `executions`
+query asking for `createdAt` would have failed in production. Unit tests on the record would not have
+found it, because the record is not what is broken — the pairing of the record with the schema is.
+
+### 12.7 Redaction round-trip
 
 Covered in §9.1. A normal read-edit-save cycle destroyed credentials.
 
@@ -1101,21 +1113,21 @@ Covered in §9.1. A normal read-edit-save cycle destroyed credentials.
 **Done:** domain model with graph validation; MongoDB persistence with indexes, optimistic locking
 and auditing; hardened outbound HTTP client with SSRF validation; full CRUD use cases; GraphQL API;
 query cost limits; secret redaction; the workflow engine and its extension point; the CONDITION
-executor with a closed expression grammar; the HTTP executor with DNS-rebinding protection; 416
-tests.
+executor with a closed expression grammar; the HTTP executor with DNS-rebinding protection; the execution use
+cases, GraphQL execution API and mock trigger endpoint; 447 tests.
 
-**Left in Sprint 3:**
-- **#24–#26** execution use cases, mock trigger endpoint, and the resolver that re-exposes execution
-  queries in the schema.
+**Sprint 3 is complete.**
 
 **Sprint 4:** authentication and authorization; `ownerId` on the aggregate with a migration and
 index; owner-scoped port methods; rate limiting; scheduler.
 
 **Known open items:**
 - No authentication at all.
-- No rate limiting.
-- `ExecutionStep.output` will need its own redaction when exposed (#26) — it will contain third-party
-  response bodies, which are the least trustworthy data in the system.
+- No rate limiting, and the synchronous trigger now does real work: each call holds a request thread
+  for up to the execution cap. That is a thread-pool exhaustion risk an anonymous caller can trigger.
+- `HttpTargetValidator.validate(String)` still exists and still discards the resolved addresses, so
+  any future caller reaching for it is silently unprotected against DNS rebinding. The Javadoc says
+  so, but a comment is weaker than a compiler.
 
 ---
 

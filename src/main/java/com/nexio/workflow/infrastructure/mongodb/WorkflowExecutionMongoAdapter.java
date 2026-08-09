@@ -162,7 +162,7 @@ public class WorkflowExecutionMongoAdapter implements WorkflowExecutionPort {
      */
     @Override
     public List<WorkflowExecution> findByWorkflowId(String workflowId, PageQuery page) {
-        return repository.findByWorkflowIdOrderByCreatedAtDesc(workflowId, OffsetPageable.unsorted(page));
+        return repository.findByWorkflowIdOrderByCreatedAtDescIdDesc(workflowId, OffsetPageable.unsorted(page));
     }
 
     @Override

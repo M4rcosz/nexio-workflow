@@ -7,6 +7,17 @@ type Query {
   # nao existe consulta sem recorte. O padrao 20 espelha PageQuery.DEFAULT_LIMIT.
   workflows(limit: Int = 20, offset: Int = 0, enabledOnly: Boolean = false): [WorkflowDefinition!]!
   workflow(id: ID!): WorkflowDefinition
+
+  # Execucoes de um workflow, da mais recente para a mais antiga. A ordem e total -- `createdAt`
+  # decrescente com desempate por identificador -- porque `createdAt` nao e unico e a paginacao por
+  # deslocamento sobre uma ordem com empate pode repetir um registro numa pagina e pular outro na
+  # seguinte, sem que o cliente perceba.
+  #
+  # Um `workflowId` que nao existe e NOT_FOUND, e nao lista vazia: lista vazia seria
+  # indistinguivel de um workflow real que nunca foi disparado, e as duas situacoes pedem reacoes
+  # opostas de quem chamou.
+  executions(workflowId: ID!, limit: Int = 20, offset: Int = 0): [WorkflowExecution!]!
+  execution(id: ID!): WorkflowExecution
 }
 
 # --- MUTATIONS ---
@@ -20,13 +31,22 @@ type Mutation {
   # cliente que so quer pausar um workflow nao deveria ter que montar um input parcial
   activateWorkflow(id: ID!): WorkflowDefinition!
   deactivateWorkflow(id: ID!): WorkflowDefinition!
+
+  # Dispara o workflow e devolve a execucao ja terminada: a execucao e sincrona, entao quem chama
+  # espera a caminhada inteira -- ver docs/adr/0005-synchronous-execution.md.
+  #
+  # Um workflow desativado e recusado com BAD_REQUEST e nao gera execucao nenhuma: registrar um
+  # disparo que nunca comecou poluiria o historico com linhas que nao representam trabalho.
+  #
+  # `payload` e o evento, e ele fica gravado no documento da execucao. Vale a mesma politica de
+  # escrita de qualquer mapa livre deste schema (sem chave iniciada por `$` ou `_`, tetos de
+  # tamanho e de aninhamento), e na leitura ele volta com os valores sensiveis mascarados.
+  triggerWorkflow(id: ID!, payload: JSON): WorkflowExecution!
 }
 
-# As operacoes de execucao -- as queries `executions` e `execution`, a mutation `triggerWorkflow` e
-# os tipos `WorkflowExecution` e `ExecutionStep` -- foram removidas deste schema. Elas nao tem
-# resolver, e um campo declarado sem DataFetcher devolve null em silencio: publicar isso e publicar
-# um contrato que mente para o cliente. Voltam no Sprint 3, junto com os resolvers que as sustentam,
-# nas issues #24 (consulta de execucoes) e #26 (disparo de workflow).
+# As operacoes de execucao ficaram fora deste schema ate a issue #26 porque nao tinham resolver, e
+# um campo declarado sem DataFetcher devolve null em silencio -- publicar isso e publicar um
+# contrato que mente. Voltaram agora, junto com os resolvers que as sustentam.
 
 # --- TYPES ---
 type WorkflowDefinition {
@@ -135,10 +155,37 @@ enum HttpMethod {
   HEAD
 }
 
-# Os dois enums abaixo nao sao referenciados por nenhum campo enquanto as operacoes de execucao
-# estiverem fora do schema. Ficam aqui ja reconciliados com o dominio (ExecutionStatus e StepStatus)
-# porque enum sem campo nao mente para ninguem -- nao ha o que resolver -- e o Sprint 3 so precisa
-# reintroduzir os tipos que os usam.
+type WorkflowExecution {
+  id: ID!
+  workflowId: ID!
+  status: ExecutionStatus!
+
+  # Evento que disparou a execucao, devolvido com os valores sensiveis mascarados. Webhook de
+  # provedor de pagamento manda assinatura junto do corpo e evento de integracao carrega o token de
+  # quem o emitiu, os dois com nomes que a redacao ja conhece.
+  triggerPayload: JSON!
+
+  steps: [ExecutionStep!]!
+  createdAt: DateTime!
+  startedAt: DateTime
+  finishedAt: DateTime
+  errorMessage: String
+}
+
+type ExecutionStep {
+  nodeId: String!
+  status: StepStatus!
+
+  # Dados produzidos pelo no, com os valores sensiveis mascarados. E o campo mais delicado deste
+  # schema: num no HTTP ele e o corpo de resposta de um terceiro, guardado inteiro, e a resposta de
+  # um endpoint de autenticacao traz `token` ou `access_token` sem que ninguem tenha escrito
+  # credencial nenhuma no workflow.
+  output: JSON!
+
+  error: String
+  executedAt: DateTime!
+}
+
 enum ExecutionStatus {
   PENDING
   RUNNING

@@ -94,17 +94,33 @@ class GraphQlSchemaTest {
                 .doesNotContain("nextOnFailure");
     }
 
-    /** Campo sem resolver devolve nulo em silencio: as operacoes de execucao voltam no Sprint 3. */
+    /**
+     * Toda operacao publicada tem resolver.
+     *
+     * <p>A lista e exaustiva de proposito, e nao uma verificacao de presenca. Campo declarado sem
+     * {@code DataFetcher} devolve nulo em silencio -- publicar isso e publicar um contrato que mente
+     * para o cliente --, e foi exatamente por isso que as operacoes de execucao ficaram fora do
+     * schema ate a issue #26. Com {@code containsExactlyInAnyOrder}, acrescentar um campo ao schema
+     * sem escrever o resolver quebra este teste em vez de virar um {@code null} inexplicavel em
+     * producao.</p>
+     */
     @Test
-    void executionOperationsAreNotPublished() {
-        assertThat(fieldNames("Query")).containsExactlyInAnyOrder("workflows", "workflow");
-        assertThat(fieldNames("Mutation")).doesNotContain("triggerWorkflow");
+    void everyPublishedOperationHasAResolver() {
+        assertThat(fieldNames("Query")).containsExactlyInAnyOrder(
+                "workflows", "workflow", "executions", "execution");
+        assertThat(fieldNames("Mutation")).containsExactlyInAnyOrder(
+                "createWorkflow", "updateWorkflow", "deleteWorkflow",
+                "activateWorkflow", "deactivateWorkflow", "triggerWorkflow");
     }
 
+    /** Os tipos de execucao existem e batem com o que o dominio guarda. */
     @Test
-    void everyPublishedMutationHasAResolver() {
-        assertThat(fieldNames("Mutation")).containsExactlyInAnyOrder(
-                "createWorkflow", "updateWorkflow", "deleteWorkflow", "activateWorkflow", "deactivateWorkflow");
+    void executionTypesMatchTheDomain() {
+        assertThat(fieldNames("WorkflowExecution")).containsExactlyInAnyOrder(
+                "id", "workflowId", "status", "triggerPayload", "steps",
+                "createdAt", "startedAt", "finishedAt", "errorMessage");
+        assertThat(fieldNames("ExecutionStep")).containsExactlyInAnyOrder(
+                "nodeId", "status", "output", "error", "executedAt");
     }
 
     @Test

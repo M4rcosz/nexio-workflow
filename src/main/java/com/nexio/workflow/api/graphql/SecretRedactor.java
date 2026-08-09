@@ -201,6 +201,41 @@ public final class SecretRedactor {
     }
 
     /**
+     * Endereco embutido em texto corrido: do esquema ate o primeiro espaco.
+     *
+     * <p>Sem quantificador aninhado e sem alternancia com sobreposicao, entao o casamento e linear
+     * -- o mesmo cuidado que fez {@code matches} sair da gramatica das condicoes. O texto analisado
+     * aqui vem de mensagem de excecao de terceiro, ou seja, de fora.</p>
+     */
+    private static final Pattern EMBEDDED_URL = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Mascara os enderecos que aparecem <b>dentro</b> de um texto, e nao o texto inteiro.
+     *
+     * <p>Existe porque {@link #redactUrl(String)} nao resolve este caso e falhava em silencio: ele
+     * chama {@code new URI(value)} sobre o valor inteiro, e {@code "Falha ao chamar https://..."}
+     * nao e um URI -- o espaco derruba o parse, o metodo devolve o texto como veio e a credencial
+     * sai inteira. Descoberto por um teste que afirmava a garantia antes de ela existir.</p>
+     *
+     * <p>O destino disto e a {@code errorMessage} de uma execucao e o {@code error} de um passo, que
+     * a issue #26 passou a devolver a qualquer leitor. O texto e montado a partir da mensagem de
+     * excecao de bibliotecas de terceiros: hoje o executor de no HTTP nao inclui a URL na mensagem
+     * que compoe, mas a mensagem do cliente HTTP cita o host, e nao ha contrato nenhum garantindo o
+     * que uma versao futura vai colocar ali. Depender de "nenhuma mensagem carrega endereco" e
+     * depender de codigo que nao e nosso.</p>
+     *
+     * @param text texto a varrer, pode ser nulo
+     * @return o mesmo texto com userinfo e parametros sensiveis de cada endereco mascarados
+     */
+    public static String redactUrlsIn(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        return EMBEDDED_URL.matcher(text).replaceAll(match ->
+                java.util.regex.Matcher.quoteReplacement(redactUrl(match.group())));
+    }
+
+    /**
      * Mascara o valor de cada parametro cujo nome indique credencial, preservando os demais.
      *
      * <p>O parametro sem {@code =} fica como esta: nao ha valor para mascarar, e o nome sozinho e o

@@ -29,7 +29,15 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * por data.</p>
  */
 @Document(collection = "workflow_executions")
-@CompoundIndex(name = "exec_workflow_created", def = "{'workflowId': 1, 'createdAt': -1}")
+// O '_id' no fim nao e enfeite: 'createdAt' nao e unico -- varios disparos do mesmo workflow
+// caem no mesmo instante -- e ordenacao com empate nao tem ordem definida. Com skip/limit por
+// cima disso, duas paginas consecutivas podem repetir uma execucao e pular outra, e o cliente nao
+// tem como perceber. O '_id' e o criterio de desempate que torna a ordem total. Ele precisa estar
+// no indice porque o sort so e servido pelo indice se casar com ele; sem isso a consulta passaria
+// a ordenar em memoria. O nome do indice mudou junto com a definicao de proposito: alterar a
+// definicao mantendo o nome derruba toda instancia no meio de um rollout com IndexOptionsConflict
+// -- ver MongoIndexInitializer.
+@CompoundIndex(name = "exec_workflow_created_id", def = "{'workflowId': 1, 'createdAt': -1, '_id': -1}")
 @CompoundIndex(name = "exec_status_created", def = "{'status': 1, 'createdAt': 1}")
 public class WorkflowExecution {
 

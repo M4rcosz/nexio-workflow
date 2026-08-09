@@ -187,7 +187,7 @@ class DomainMappingRoundTripTest extends AbstractMongoIntegrationTest {
         mongoTemplate.save(definition);
 
         assertThat(indexNames(DEFINITIONS)).contains("def_enabled_trigger", "def_trigger_type");
-        assertThat(indexNames(EXECUTIONS)).contains("exec_workflow_created", "exec_status_created");
+        assertThat(indexNames(EXECUTIONS)).contains("exec_workflow_created_id", "exec_status_created");
 
         assertThat(indexKeys(DEFINITIONS, "def_trigger_type"))
                 .isEqualTo(new Document("triggerConfig.type", 1));
