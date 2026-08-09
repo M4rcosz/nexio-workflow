@@ -2,6 +2,7 @@ package com.nexio.workflow.application.usecase;
 
 import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.application.port.out.WorkflowSchedulePort;
 import com.nexio.workflow.application.usecase.command.UpdateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
@@ -38,13 +39,17 @@ public class UpdateWorkflowUseCase {
 
     private final WorkflowDefinitionPort workflowDefinitionPort;
 
+    private final WorkflowSchedulePort schedulePort;
+
     /**
      * Cria o caso de uso com injecao por construtor.
      *
      * @param workflowDefinitionPort porta de persistencia das definicoes
      */
-    public UpdateWorkflowUseCase(WorkflowDefinitionPort workflowDefinitionPort) {
+    public UpdateWorkflowUseCase(WorkflowDefinitionPort workflowDefinitionPort,
+                                 WorkflowSchedulePort schedulePort) {
         this.workflowDefinitionPort = workflowDefinitionPort;
+        this.schedulePort = schedulePort;
     }
 
     /**
@@ -75,6 +80,11 @@ public class UpdateWorkflowUseCase {
         } catch (IllegalArgumentException e) {
             throw new InvalidWorkflowException(e.getMessage(), e);
         }
-        return workflowDefinitionPort.save(definition);
+        WorkflowDefinition saved = workflowDefinitionPort.save(definition);
+        // Um unico `register` cobre as duas direcoes: ele agenda quando o workflow passou a ser
+        // SCHEDULE habilitado e cancela quando deixou de ser. Quem chama sabe que a definicao mudou
+        // e nao precisa saber para que lado.
+        schedulePort.register(saved);
+        return saved;
     }
 }

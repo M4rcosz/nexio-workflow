@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.application.port.out.WorkflowSchedulePort;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,13 +35,16 @@ class DeleteWorkflowUseCaseTest {
     private WorkflowDefinitionPort definitionPort;
 
     @Mock
+    private WorkflowSchedulePort schedulePort;
+
+    @Mock
     private WorkflowExecutionPort executionPort;
 
     private DeleteWorkflowUseCase useCase;
 
     @BeforeEach
     void setUp() {
-        useCase = new DeleteWorkflowUseCase(definitionPort, executionPort);
+        useCase = new DeleteWorkflowUseCase(definitionPort, executionPort, schedulePort);
     }
 
     /**

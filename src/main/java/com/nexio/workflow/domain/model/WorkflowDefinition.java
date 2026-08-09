@@ -1,6 +1,7 @@
 package com.nexio.workflow.domain.model;
 
 import com.nexio.workflow.domain.model.enums.NodeType;
+import com.nexio.workflow.domain.model.enums.TriggerType;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -304,6 +305,12 @@ public class WorkflowDefinition {
         }
         if (triggerConfig != null) {
             MapSanitizer.validate(triggerConfig.config(), "triggerConfig.config");
+            if (triggerConfig.type() == TriggerType.SCHEDULE) {
+                // Recusado aqui, na escrita, e nao logado na subida da aplicacao. Quem digitou o
+                // cron errado nao le o log do servidor, e um workflow que existe, esta habilitado e
+                // nunca dispara e das falhas mais dificeis de perceber que este sistema tem.
+                CronExpressions.require(triggerConfig.config());
+            }
         }
     }
 

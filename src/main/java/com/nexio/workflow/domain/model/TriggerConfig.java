@@ -12,7 +12,10 @@ import java.util.Objects;
  * callback de persistencia.</p>
  *
  * @param type   tipo do gatilho
- * @param config parametros especificos do gatilho, por exemplo {@code {"cron": "0 8 * * 1-5"}} para SCHEDULE
+ * @param config parametros especificos do gatilho. Para SCHEDULE, {@code {"cron": "0 0 8 * * MON-FRI"}}
+ *               -- <b>seis</b> campos comecando por segundos, que e o formato do Spring. O exemplo
+ *               que estava aqui antes tinha cinco campos, no formato do cron do Unix, e nao e
+ *               aceito; ver {@link CronExpressions}
  */
 public record TriggerConfig(
         TriggerType type,

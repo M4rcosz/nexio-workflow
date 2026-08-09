@@ -2,6 +2,7 @@ package com.nexio.workflow.application.usecase;
 
 import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.application.port.out.WorkflowSchedulePort;
 import com.nexio.workflow.application.usecase.command.CreateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
 import com.nexio.workflow.domain.model.WorkflowDefinition;
@@ -49,13 +50,17 @@ public class CreateWorkflowUseCase {
 
     private final WorkflowDefinitionPort workflowDefinitionPort;
 
+    private final WorkflowSchedulePort schedulePort;
+
     /**
      * Cria o caso de uso com injecao por construtor.
      *
      * @param workflowDefinitionPort porta de persistencia das definicoes
      */
-    public CreateWorkflowUseCase(WorkflowDefinitionPort workflowDefinitionPort) {
+    public CreateWorkflowUseCase(WorkflowDefinitionPort workflowDefinitionPort,
+                                 WorkflowSchedulePort schedulePort) {
         this.workflowDefinitionPort = workflowDefinitionPort;
+        this.schedulePort = schedulePort;
     }
 
     /**
@@ -87,6 +92,10 @@ public class CreateWorkflowUseCase {
         } catch (IllegalArgumentException e) {
             throw new InvalidWorkflowException(e.getMessage(), e);
         }
-        return workflowDefinitionPort.save(definition);
+        WorkflowDefinition saved = workflowDefinitionPort.save(definition);
+        // Agenda depois de gravar, e nao antes: agendar primeiro deixaria um cron vivo apontando
+        // para um workflow que a gravacao pode ter recusado.
+        schedulePort.register(saved);
+        return saved;
     }
 }

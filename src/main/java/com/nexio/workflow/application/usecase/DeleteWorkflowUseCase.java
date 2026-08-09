@@ -3,6 +3,7 @@ package com.nexio.workflow.application.usecase;
 import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
 import com.nexio.workflow.application.port.out.WorkflowExecutionPort;
+import com.nexio.workflow.application.port.out.WorkflowSchedulePort;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
 import com.nexio.workflow.domain.model.TextSanitizer;
 import java.util.Objects;
@@ -48,6 +49,8 @@ public class DeleteWorkflowUseCase {
     private final WorkflowDefinitionPort workflowDefinitionPort;
     private final WorkflowExecutionPort workflowExecutionPort;
 
+    private final WorkflowSchedulePort schedulePort;
+
     /**
      * Cria o caso de uso com injecao por construtor.
      *
@@ -56,9 +59,11 @@ public class DeleteWorkflowUseCase {
      */
     public DeleteWorkflowUseCase(
             WorkflowDefinitionPort workflowDefinitionPort,
-            WorkflowExecutionPort workflowExecutionPort) {
+            WorkflowExecutionPort workflowExecutionPort,
+            WorkflowSchedulePort schedulePort) {
         this.workflowDefinitionPort = workflowDefinitionPort;
         this.workflowExecutionPort = workflowExecutionPort;
+        this.schedulePort = schedulePort;
     }
 
     /**
@@ -78,6 +83,10 @@ public class DeleteWorkflowUseCase {
         if (!workflowDefinitionPort.deleteById(id)) {
             throw new WorkflowNotFoundException(id);
         }
+        // Cancela antes da cascata: enquanto o agendamento estiver vivo, o cron pode disparar um
+        // workflow que acabou de deixar de existir -- e o disparo criaria execucoes novas depois de
+        // a limpeza ter passado por elas.
+        schedulePort.unregister(id);
         String safeId = TextSanitizer.truncateSystemText(id, MAX_ID_IN_LOG);
         try {
             long removed = workflowExecutionPort.deleteByWorkflowId(id);

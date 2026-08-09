@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import com.nexio.workflow.application.port.out.ActorId;
 import com.nexio.workflow.application.port.out.WorkflowDefinitionPort;
+import com.nexio.workflow.application.port.out.WorkflowSchedulePort;
 import com.nexio.workflow.application.usecase.command.UpdateWorkflowCommand;
 import com.nexio.workflow.domain.exception.InvalidWorkflowException;
 import com.nexio.workflow.domain.exception.WorkflowNotFoundException;
@@ -36,6 +37,9 @@ class UpdateWorkflowUseCaseTest {
     @Mock
     private WorkflowDefinitionPort port;
 
+    @Mock
+    private WorkflowSchedulePort schedulePort;
+
     @Captor
     private ArgumentCaptor<WorkflowDefinition> saved;
 
@@ -43,7 +47,7 @@ class UpdateWorkflowUseCaseTest {
 
     @BeforeEach
     void setUp() {
-        useCase = new UpdateWorkflowUseCase(port);
+        useCase = new UpdateWorkflowUseCase(port, schedulePort);
     }
 
     @Test

@@ -328,7 +328,13 @@ class WorkflowDefinitionMongoAdapterTest extends AbstractMongoIntegrationTest {
         definition.setName(name);
         definition.setDescription("definicao usada no teste do adaptador");
         definition.setEnabled(enabled);
-        definition.setTriggerConfig(new TriggerConfig(triggerType, Map.of("event", "order_created")));
+        // Um workflow SCHEDULE precisa de um cron valido: sem ele a definicao e recusada na escrita.
+        // As fixturas antigas gravavam SCHEDULE so com "event", ou seja, workflows agendados que
+        // nunca poderiam disparar -- e a validacao nova as pegou.
+        Map<String, Object> triggerParams = triggerType == TriggerType.SCHEDULE
+                ? Map.of("cron", "0 0 8 * * MON-FRI")
+                : Map.of("event", "order_created");
+        definition.setTriggerConfig(new TriggerConfig(triggerType, triggerParams));
         definition.setNodes(nodes);
         definition.setStartNodeId("start");
         definition.validateGraph();
