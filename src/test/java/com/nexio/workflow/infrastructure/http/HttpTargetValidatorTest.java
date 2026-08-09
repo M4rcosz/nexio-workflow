@@ -227,4 +227,37 @@ class HttpTargetValidatorTest {
         assertThatCode(() -> permissive.validateWithoutResolving("https://api.exemplo.test/v1"))
                 .doesNotThrowAnyException();
     }
+
+    /**
+     * URL com marcador de template passa pela validacao de sintaxe.
+     *
+     * <p>{@code &#123;} e {@code &#125;} nao sao caracteres validos num URI, entao o
+     * {@code new URI} estourava e <b>toda</b> URL templatizada era recusada como "URL de destino
+     * invalida" no {@code createWorkflow} -- o templating ficava inutilizavel de ponta a ponta. Nem
+     * os testes do resolvedor nem os do executor viam: os dois exercitavam a resolucao, e quem
+     * quebrava era o caminho de escrita. So o teste de ponta a ponta juntou as duas metades.</p>
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "https://api.exemplo.test/pedidos/{{trigger.pedidoId}}",
+        "https://api.exemplo.test/x?ref={{trigger.ref}}",
+        "https://api.exemplo.test/{{trigger.a}}/{{steps.no.b}}"
+    })
+    void acceptsAUrlCarryingTemplatePlaceholders(String url) {
+        assertThatCode(() -> new HttpTargetValidator(false).validateWithoutResolving(url))
+                .doesNotThrowAnyException();
+    }
+
+    /**
+     * O marcador nao serve de disfarce para um destino interno.
+     *
+     * <p>A substituicao troca o marcador por um rotulo neutro para conseguir analisar a sintaxe; ela
+     * nao pode fazer um host interno literal deixar de ser recusado.</p>
+     */
+    @Test
+    void stillRefusesAnInternalHostWhenTheUrlAlsoHasPlaceholders() {
+        assertThatExceptionOfType(HttpTargetNotAllowedException.class)
+                .isThrownBy(() -> new HttpTargetValidator(true)
+                        .validateWithoutResolving("http://169.254.169.254/{{trigger.a}}"));
+    }
 }

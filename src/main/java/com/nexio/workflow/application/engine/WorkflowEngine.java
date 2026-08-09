@@ -232,17 +232,25 @@ public class WorkflowEngine {
                         + "': a definicao gravada nao satisfaz mais a validacao de arestas";
             }
             NodeExecutionResult result = runNode(node, execution, outputs);
-            String rejected = recordStep(execution, node, result);
+            // O desfecho incompativel e resolvido ANTES de gravar o passo. Gravar primeiro e
+            // conferir depois deixava o passo marcado SUCCESS enquanto era exatamente ele que
+            // derrubava a execucao -- alguem abrindo o historico via uma execucao FAILED cujos
+            // passos estavam todos verdes, e nada apontava para o culpado. Ao converter o
+            // desfecho em falha aqui, o passo gravado ja carrega o status e o motivo certos.
+            String mismatch = mismatchReason(node, result);
+            NodeExecutionResult recorded = mismatch == null
+                    ? result
+                    : NodeExecutionResult.failure(mismatch, result.output());
+            String rejected = recordStep(execution, node, recorded);
             if (rejected != null) {
                 return rejected;
             }
-            outputs.put(node.nodeId(), result.output());
-            if (result.outcome() == NodeOutcome.FAILURE) {
-                return "No '" + node.nodeId() + "' falhou: " + result.error();
-            }
-            String mismatch = mismatchReason(node, result);
+            outputs.put(node.nodeId(), recorded.output());
             if (mismatch != null) {
                 return mismatch;
+            }
+            if (result.outcome() == NodeOutcome.FAILURE) {
+                return "No '" + node.nodeId() + "' falhou: " + result.error();
             }
             currentId = nextNodeId(node, result.outcome());
         }

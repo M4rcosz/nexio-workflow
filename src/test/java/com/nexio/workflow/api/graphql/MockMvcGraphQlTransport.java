@@ -34,7 +34,7 @@ import reactor.core.publisher.Mono;
  * <p>Assincronia nao e simulada: o {@link Mono} devolvido ja vem resolvido, porque o
  * {@code GraphQlTester} bloqueia nele em seguida e {@code MockMvc} e sincrono por natureza.</p>
  */
-final class MockMvcGraphQlTransport implements GraphQlTransport {
+public final class MockMvcGraphQlTransport implements GraphQlTransport {
 
     private static final TypeReference<Map<String, Object>> RESPONSE_BODY = new TypeReference<>() { };
 
@@ -56,7 +56,7 @@ final class MockMvcGraphQlTransport implements GraphQlTransport {
      * @param path         caminho do endpoint GraphQL
      * @return tester pronto para uso
      */
-    static GraphQlTester tester(MockMvc mockMvc, ObjectMapper objectMapper, String path) {
+    public static GraphQlTester tester(MockMvc mockMvc, ObjectMapper objectMapper, String path) {
         return GraphQlTester.builder(new MockMvcGraphQlTransport(mockMvc, objectMapper, path)).build();
     }
 

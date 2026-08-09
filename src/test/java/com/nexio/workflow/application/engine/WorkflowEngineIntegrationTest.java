@@ -11,6 +11,7 @@ import com.nexio.workflow.domain.model.WorkflowNode;
 import com.nexio.workflow.domain.model.enums.ExecutionStatus;
 import com.nexio.workflow.domain.model.enums.HttpMethod;
 import com.nexio.workflow.domain.model.enums.NodeType;
+import com.nexio.workflow.domain.model.enums.StepStatus;
 import com.nexio.workflow.infrastructure.config.MongoConfig;
 import com.nexio.workflow.infrastructure.mongodb.WorkflowExecutionMongoAdapter;
 import com.nexio.workflow.infrastructure.mongodb.WorkflowExecutionWriteValidationCallback;
@@ -208,6 +209,77 @@ class WorkflowEngineIntegrationTest extends AbstractMongoIntegrationTest {
         @Override
         public NodeExecutionResult execute(WorkflowNode node, NodeExecutionContext context) {
             return result;
+        }
+    }
+
+    /**
+     * Falha no meio da caminhada: os passos anteriores ficam gravados com o status que tiveram.
+     *
+     * <p>E o criterio da issue #29 que nao dava para afirmar sem ir ao banco. O que importa nao e so
+     * a execucao terminar FAILED, e sim o historico continuar contando a verdade sobre o que rodou
+     * antes: dois passos SUCCESS, um FAILED, e nenhum quarto passo -- a caminhada para na falha e
+     * nao segue para o no seguinte.</p>
+     */
+    @Test
+    void aFailureMidWalkKeepsTheEarlierStepsWithTheStatusTheyHad() {
+        WorkflowEngine engine = new WorkflowEngine(
+                List.of(new FailingAtExecutor("fim")),
+                executionPort,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(30));
+
+        WorkflowExecution finished = engine.execute(definition(), Map.of());
+
+        assertThat(finished.getStatus()).isEqualTo(ExecutionStatus.FAILED);
+        assertThat(finished.getErrorMessage()).contains("fim");
+
+        WorkflowExecution reread = executionPort.findById(finished.getId()).orElseThrow();
+        assertThat(reread.getSteps()).extracting(step -> step.nodeId() + ":" + step.status())
+                .containsExactly("start:SUCCESS", "meio:SUCCESS", "fim:FAILED");
+        assertThat(reread.getSteps().getFirst().output()).containsEntry("statusCode", 200);
+    }
+
+    /**
+     * O passo que derruba a execucao por desfecho incompativel e gravado FAILED, e nao SUCCESS.
+     *
+     * <p>A conferencia acontecia depois da gravacao, entao o passo ficava verde enquanto era
+     * exatamente ele que falhava a execucao: o historico mostrava uma execucao FAILED com todos os
+     * passos SUCCESS e nada apontando o culpado.</p>
+     */
+    @Test
+    void theStepThatFailsTheExecutionByOutcomeMismatchIsRecordedAsFailed() {
+        WorkflowEngine engine = new WorkflowEngine(
+                // Um executor de HTTP_REQUEST que devolve desfecho de condicao: incompativel com o
+                // tipo do no, e a engine tem de recusar em vez de seguir por uma aresta que nao
+                // existe.
+                List.of(new FixedExecutor(NodeExecutionResult.condition(true, Map.of()))),
+                executionPort,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(30));
+
+        WorkflowExecution finished = engine.execute(definition(), Map.of());
+
+        assertThat(finished.getStatus()).isEqualTo(ExecutionStatus.FAILED);
+
+        WorkflowExecution reread = executionPort.findById(finished.getId()).orElseThrow();
+        assertThat(reread.getSteps()).hasSize(1);
+        assertThat(reread.getSteps().getFirst().status()).isEqualTo(StepStatus.FAILED);
+        assertThat(reread.getSteps().getFirst().error()).contains("incompativel");
+    }
+
+    /** Falha no no indicado; os anteriores tem sucesso. */
+    private record FailingAtExecutor(String failingNodeId) implements NodeExecutor {
+
+        @Override
+        public NodeType supportedType() {
+            return NodeType.HTTP_REQUEST;
+        }
+
+        @Override
+        public NodeExecutionResult execute(WorkflowNode node, NodeExecutionContext context) {
+            return failingNodeId.equals(node.nodeId())
+                    ? NodeExecutionResult.failure("servico fora do ar", Map.of("statusCode", 503))
+                    : NodeExecutionResult.success(Map.of("statusCode", 200));
         }
     }
 }

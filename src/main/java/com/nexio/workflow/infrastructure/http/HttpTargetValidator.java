@@ -117,7 +117,7 @@ public class HttpTargetValidator {
 
         URI uri;
         try {
-            uri = new URI(url.trim());
+            uri = new URI(withoutPlaceholders(url.trim()));
         } catch (URISyntaxException e) {
             throw reject(Reason.MALFORMED_URL, "sintaxe invalida: " + forLog(url));
         }
@@ -208,6 +208,29 @@ public class HttpTargetValidator {
      */
     private static final Pattern IP_LITERAL_CANDIDATE =
             Pattern.compile("^[0-9.]+$|^0[xX][0-9a-fA-F]+$");
+
+    /**
+     * Troca os marcadores {@code {{...}}} por um rotulo neutro antes da analise sintatica.
+     *
+     * <p>Sem isto, <b>nenhuma URL templatizada passava pela validacao de escrita</b>: {@code &#123;} e
+     * {@code &#125;} nao sao caracteres validos num URI, o {@code new URI} estourava e
+     * {@code http://api.exemplo.test/pedidos/&#123;&#123;trigger.id&#125;&#125;} era recusada como
+     * "URL de destino invalida" no {@code createWorkflow}. O templating ficava inutilizavel de ponta
+     * a ponta, e nenhum teste via porque o resolvedor e o caminho de escrita eram exercitados
+     * separadamente -- so o teste de ponta a ponta juntou os dois.</p>
+     *
+     * <p>A substituicao nao enfraquece a checagem de destino. O que ela protege e o host, e o
+     * marcador no host ja foi recusado antes, por {@code Placeholders.validateUrlTemplate}: o
+     * marcador so e permitido depois da autoridade, entao o que sobra aqui esta no caminho ou na
+     * consulta e nao muda para onde a requisicao vai. O rotulo e alfanumerico para nao introduzir
+     * outro problema de sintaxe onde havia um marcador.</p>
+     */
+    private static String withoutPlaceholders(String url) {
+        return PLACEHOLDER.matcher(url).replaceAll("marcador");
+    }
+
+    /** Marcador de template; mesma sintaxe do {@code Placeholders} do dominio. */
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{[^{}]*\\}\\}");
 
     private void validateScheme(URI uri, String rawUrl) {
         String scheme = uri.getScheme();
