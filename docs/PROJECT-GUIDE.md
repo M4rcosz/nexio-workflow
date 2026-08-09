@@ -1064,6 +1064,7 @@ undo it without understanding it. They're in `docs/adr/`.
 | 0005 | Synchronous execution | Async silently swallows exceptions, leaving executions stuck at RUNNING forever, needing a reaper. |
 | 0006 | Actor seam | Thread the actor now while there are five use cases, not later when there are eight. |
 | 0007 | Outbound HTTP client | The JDK client has no DNS extension point, so the connection could not be pinned to the validated address — leaving DNS rebinding open. Moved to Apache HttpClient 5 for its `DnsResolver`. |
+| 0008 | Auth via nexio-core | Reuse the identity that already exists, but with asymmetric signing: a symmetric secret means whoever can verify can also mint, and the service holding it is the one that makes outbound calls to user-chosen URLs. |
 
 **ADRs 0003, 0004 and 0005 all have correction sections**, because reality disagreed with them. The
 original reasoning is kept next to what it got wrong — that's more useful than a document that
@@ -1193,7 +1194,7 @@ carried):
 - The old `exec_workflow_created` index is never dropped, so collections carry a dead index.
 - `@Profile("dev")` on the REST trigger endpoint is documented as a control it does not provide,
   because `triggerWorkflow` reaches the same use case unrestricted over GraphQL.
-- No authentication at all.
+- No authentication at all — decided in ADR 0008, not yet implemented, and it starts with a change in nexio-core.
 - No rate limiting, and the synchronous trigger now does real work: each call holds a request thread
   for up to the execution cap. That is a thread-pool exhaustion risk an anonymous caller can trigger.
 - `HttpTargetValidator.validate(String)` still exists and still discards the resolved addresses, so
