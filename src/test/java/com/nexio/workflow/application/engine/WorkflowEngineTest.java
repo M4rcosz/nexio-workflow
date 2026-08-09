@@ -2,6 +2,7 @@ package com.nexio.workflow.application.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.tuple;
 
@@ -581,5 +582,31 @@ class WorkflowEngineTest {
         public Instant instant() {
             return now;
         }
+    }
+
+    /**
+     * Payload aninhado alem do que a copia leniente aceita vira recusa de entrada, e nao erro
+     * interno.
+     *
+     * <p>O {@code setTriggerPayload} roda fora do {@code try} que embrulha a caminhada, e a copia
+     * leniente lanca {@code IllegalArgumentException} crua acima de 100 niveis. Nem o caso de uso
+     * nem o resolver tratavam esse tipo, entao um payload com 101 niveis -- uns 800 bytes, muito
+     * abaixo do teto de corpo da requisicao -- virava INTERNAL_ERROR com pilha completa no log, a
+     * cada requisicao, sem autenticacao. Entre 11 e 100 niveis a resposta ja era BAD_REQUEST; so a
+     * faixa acima atravessava.</p>
+     */
+    @Test
+    void aTriggerPayloadNestedBeyondTheCopyLimitIsRejectedAsInvalidInput() {
+        Map<String, Object> deep = new java.util.LinkedHashMap<>(Map.of("fundo", 1));
+        for (int i = 0; i < 120; i++) {
+            Map<String, Object> wrapper = new java.util.LinkedHashMap<>();
+            wrapper.put("n", deep);
+            deep = wrapper;
+        }
+        Map<String, Object> payload = deep;
+
+        assertThatExceptionOfType(InvalidWorkflowException.class)
+                .isThrownBy(() -> engine(httpExecutor(node -> NodeExecutionResult.success(Map.of())))
+                        .execute(linearDefinition(), payload));
     }
 }

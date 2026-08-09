@@ -82,7 +82,12 @@ class ExternalDataSanitizerTest {
                 arguments("nulo", null),
                 arguments("lista na raiz", numbers(5)),
                 arguments("texto na raiz", "so um texto"),
-                arguments("mapa vazio", Map.of()));
+                arguments("mapa vazio", Map.of()),
+                // Raiz que nao da para gravar. Faltavam no conjunto, e por isso a propriedade nunca
+                // disparou: todos os casos acima entregam um Map na raiz, e o tratamento de "nao da
+                // para gravar" so existia dentro de mapa e de lista.
+                arguments("marcador na raiz", MapSanitizer.REDACTED_MARKER),
+                arguments("tipo sem codec na raiz", new StringBuilder("x")));
     }
 
     /** {@code _links} e {@code _embedded} de qualquer API HAL, o caso que motivou a classe. */
@@ -236,6 +241,27 @@ class ExternalDataSanitizerTest {
                 Map.of("quando", Date.from(moment)), ENTRIES, DEPTH);
 
         assertThat(asMap(sanitized.value())).containsEntry("quando", moment);
+    }
+
+    /**
+     * Raiz impossivel de gravar vira nulo contado, e nao o sentinela interno.
+     *
+     * <p>O {@code DROP} e um {@code new Object()} privado. Dentro de um mapa ele vira chave removida
+     * e dentro de uma lista vira {@code null}, mas na raiz saia como valor: a politica estrita o
+     * recusava como "tipo nao suportado" e a execucao morria na gravacao do passo -- exatamente o
+     * que esta classe existe para impedir -- com {@code droppedKeys} zerado afirmando que nada se
+     * perdeu. Alcancavel de fora: um servico respondendo {@code text/plain} com o proprio marcador
+     * de redacao no corpo.</p>
+     */
+    @Test
+    void turnsAnUnstorableRootIntoACountedNullInsteadOfLeakingTheSentinel() {
+        Sanitized marker = ExternalDataSanitizer.sanitize(MapSanitizer.REDACTED_MARKER, ENTRIES, DEPTH);
+        assertThat(marker.value()).isNull();
+        assertThat(marker.droppedKeys()).isEqualTo(1);
+
+        Sanitized noDepth = ExternalDataSanitizer.sanitize(Map.of("a", 1), ENTRIES, 0);
+        assertThat(noDepth.value()).isNull();
+        assertThat(noDepth.truncated()).isTrue();
     }
 
     /**

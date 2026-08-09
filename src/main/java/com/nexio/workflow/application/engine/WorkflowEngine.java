@@ -185,7 +185,19 @@ public class WorkflowEngine {
         WorkflowExecution execution = new WorkflowExecution();
         execution.setId(UUID.randomUUID().toString());
         execution.setWorkflowId(definition.getId());
-        execution.setTriggerPayload(triggerPayload);
+        try {
+            execution.setTriggerPayload(triggerPayload);
+        } catch (IllegalArgumentException e) {
+            // A copia leniente do MapSanitizer ainda recusa estrutura patologica -- mais de 100
+            // niveis de aninhamento --, e ela lanca IllegalArgumentException crua. Isso acontece
+            // fora do try que embrulha a caminhada, entao subia inteiro: nem o caso de uso nem o
+            // resolver a tratavam, e o payload aninhado 101 vezes (uns 800 bytes, muito abaixo do
+            // teto de corpo) virava INTERNAL_ERROR com pilha completa no log, a cada requisicao,
+            // sem autenticacao. Entre 11 e 100 niveis a resposta ja era BAD_REQUEST pelo callback de
+            // escrita; so a faixa acima de 100 atravessava. E o mesmo defeito que a chave de
+            // operador do MongoDB tinha, no caminho novo de disparo.
+            throw new InvalidWorkflowException(e.getMessage(), e);
+        }
         execution.markRunning(clock.instant());
         return executionPort.save(execution);
     }

@@ -118,3 +118,13 @@ aplicada. Roda no `validateGraph()` da definicao, ou seja, no `createWorkflow` e
 descoberto por teste, e alcancavel com `total / quantidade` e um payload com quantidade zero. O
 executor captura `RuntimeException` por isso, para que divisao por zero vire falha de no com o no
 nomeado, e nao a mensagem generica da rede de seguranca da engine.
+
+**8. O contexto de avaliacao final nao e o que o item 1 especifica.** O item 1 diz
+`SimpleEvaluationContext.forReadOnlyDataBinding().build()`; o executor usa
+`SimpleEvaluationContext.forPropertyAccessors(new MapAccessor(false)).build()`. A troca e deliberada
+-- `forReadOnlyDataBinding` nao registra `MapAccessor`, entao `total > 100` nao resolveria contra um
+`Map` e a unica forma seria `#trigger['total']` -- mas ela e relevante para seguranca e nao pode
+ficar so no Javadoc do executor: a leitura-apenas passou a depender do argumento `false` do
+`MapAccessor`, e nao de o acessor ser somente-leitura por construcao. Verificado que o construtor
+com `false` recusa escrita, e ha teste para isso. O resto do item 1 continua valendo: nada de tipo,
+construtor ou metodo.

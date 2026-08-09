@@ -116,3 +116,21 @@ atualizacao -- `steps.<MAX_STEPS - 1>` nao pode existir --, avaliado pelo servid
 atomica. Uma contagem previa reabriria exatamente a janela de concorrencia que o `$push` fecha. O
 efeito colateral e que um filtro que nao casa e ambiguo, e o caminho de erro paga uma consulta extra
 para distinguir "atingiu o teto" de "execucao nao existe".
+
+## Correcao adicional (2026-08-08)
+
+**O teto de 200 passos nao e o que mantem o documento abaixo dos 16 MB do BSON.** O texto acima e o
+Javadoc de `MAX_STEPS` afirmam isso, e a conta nao fecha: o `output` de um passo carrega o corpo de
+resposta de um terceiro, limitado a 256 KB pelo `ResponseSizeLimitInterceptor`, entao 200 passos dao
+cerca de 51 MB. O limite do BSON e atingido por volta do 64o passo.
+
+O que acontece quando ele e atingido e pior do que o numero: o erro do Mongo no `appendStep` nao e
+`InvalidWorkflowException` nem `WorkflowNotFoundException`, entao o `recordStep` nao o trata e ele
+chega ao `catch` externo como "Falha interna na execucao". E a gravacao final do estado terminal
+reescreve o documento inteiro, ja perto do limite -- se ela falhar, a execucao fica presa em
+RUNNING, o orfao que a ADR 0005 afirma nao existir no modelo sincrono.
+
+Fica registrado e **nao corrigido nesta rodada**: a correcao e um orcamento de bytes acumulados por
+execucao, recusado como `InvalidWorkflowException` com mensagem legivel, mais um `catch` de
+`DataAccessException` no `recordStep`. Registrar a divergencia vale mais do que deixar a afirmacao
+errada de pe -- foi assim que o item 4 da ADR 0002 passou despercebido.

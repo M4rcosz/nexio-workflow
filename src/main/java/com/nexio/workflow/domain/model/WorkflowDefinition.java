@@ -422,7 +422,40 @@ public class WorkflowDefinition {
             throw new IllegalArgumentException(
                     "url do no '" + node.nodeId() + "' excede " + MAX_URL_LENGTH + " caracteres");
         }
+        // O marcador so pode aparecer depois do host. Com o host fixo, o destino continua sendo
+        // validado contra SSRF aqui na escrita e a definicao gravada mostra com quais hosts o
+        // workflow fala -- as duas coisas se perderiam com host templatizado.
+        Placeholders.validateUrlTemplate(node.url(), node.nodeId());
+        Placeholders.validatePlaceholderCount(flatten(node.headers()), "headers", node.nodeId());
+        Placeholders.validatePlaceholderCount(flatten(node.body()), "body", node.nodeId());
         requireAbsent(node.expression() == null, node, "expression");
+    }
+
+    /**
+     * Junta os valores textuais de um mapa livre para contar marcadores de uma vez so.
+     *
+     * <p>A contagem vale para o mapa inteiro, e nao por campo: vinte marcadores em vinte cabecalhos
+     * custam o mesmo que vinte no mesmo cabecalho, e e o total que decide quanto texto a resolucao
+     * pode produzir.</p>
+     */
+    private static String flatten(Map<String, Object> source) {
+        if (source == null || source.isEmpty()) {
+            return "";
+        }
+        StringBuilder joined = new StringBuilder();
+        flattenInto(source.values(), joined);
+        return joined.toString();
+    }
+
+    private static void flattenInto(Iterable<?> values, StringBuilder joined) {
+        for (Object value : values) {
+            switch (value) {
+                case String text -> joined.append(text).append('\n');
+                case Map<?, ?> map -> flattenInto(map.values(), joined);
+                case List<?> list -> flattenInto(list, joined);
+                default -> { }
+            }
+        }
     }
 
     /**

@@ -35,6 +35,15 @@ class ExecutionGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
     private static final String DEFINITIONS_COLLECTION = "workflow_definitions";
     private static final String EXECUTIONS_COLLECTION = "workflow_executions";
 
+    /**
+     * A listagem <b>nao</b> pede os passos, e isso e o contrato e nao economia de teste.
+     *
+     * <p>{@code steps} nao tem argumento de tamanho: sao ate
+     * {@value com.nexio.workflow.domain.model.WorkflowExecution#MAX_STEPS} por execucao, cada um com
+     * um {@code output} que e o corpo de resposta de um terceiro. Pedir os passos de uma pagina
+     * inteira estoura o teto de custo de proposito -- quem lista quer status e horario, e abre uma
+     * execucao para ver os passos dela.</p>
+     */
     private static final String EXECUTIONS_QUERY = """
             query Listar($workflowId: ID!, $limit: Int, $offset: Int) {
               executions(workflowId: $workflowId, limit: $limit, offset: $offset) {
@@ -42,7 +51,6 @@ class ExecutionGraphQlIntegrationTest extends AbstractMongoIntegrationTest {
                 workflowId
                 status
                 triggerPayload
-                steps { nodeId status output error executedAt }
                 createdAt
                 errorMessage
               }

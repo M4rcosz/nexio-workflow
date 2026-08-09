@@ -11,6 +11,7 @@ import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -53,11 +54,19 @@ public class HttpClientConfig {
     public static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
 
     /**
-     * Tempo limite total da requisicao, aplicado a leitura da resposta.
+     * Tempo limite <b>entre leituras</b> da resposta.
      *
-     * <p>Complementa o de conexao e cobre o caso mais comum: o remoto conecta, responde os
-     * cabecalhos e depois goteja o corpo indefinidamente (Slowloris ao contrario). Sem ele, a
-     * conexao rapida deixaria a execucao presa para sempre mesmo assim.</p>
+     * <p><b>Correcao:</b> este Javadoc dizia "tempo limite total da requisicao" e afirmava cobrir o
+     * remoto que "goteja o corpo indefinidamente". Isso e falso, e a revisao de backend pegou. O
+     * {@code responseTimeout} do httpclient5 vira o tempo limite de leitura do socket: ele limita a
+     * <b>inatividade entre leituras</b>, nao a duracao da resposta. Um servidor que manda um byte a
+     * cada 9 segundos nunca o dispara, e o teto de tempo da engine nao ajuda porque e conferido
+     * entre nos.</p>
+     *
+     * <p>Ou seja, o pior caso real de uma requisicao <b>nao</b> e {@code teto + um no}: e ilimitado.
+     * Fica registrado aqui e na correcao da ADR 0005 em vez de corrigido no codigo porque o conserto
+     * e um prazo de parede por no, aplicado na contagem de bytes da leitura -- ver o item aberto.
+     * Anunciar um limite que nao existe e pior do que declarar a ausencia dele.</p>
      */
     public static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
@@ -83,13 +92,25 @@ public class HttpClientConfig {
      * ter trocado o cliente de saida.</p>
      *
      * @param pinnedDnsResolver resolvedor com fixacao por thread
+     * @param properties        propriedades do prefixo {@code nexio.http}
      * @return gerenciador de conexoes configurado
      */
     @Bean
     public PoolingHttpClientConnectionManager outboundConnectionManager(
-            PinnedDnsResolver pinnedDnsResolver) {
+            PinnedDnsResolver pinnedDnsResolver, HttpClientProperties properties) {
         return PoolingHttpClientConnectionManagerBuilder.create()
                 .setDnsResolver(pinnedDnsResolver)
+                // O padrao do httpclient5 e 25 conexoes no total e 5 por rota. Com o disparo
+                // sincrono, cada execucao segura uma thread de requisicao do Tomcat -- que sao 200
+                // por padrao --, entao seis disparos simultaneos para o mesmo host ja passam do
+                // limite por rota: o sexto espera o tempo de emprestimo e vira falha de no
+                // culpando um destino que estava saudavel. Foi a unica configuracao em que o padrao
+                // do cliente novo difere do comportamento do cliente do JDK de forma visivel.
+                .setMaxConnTotal(properties.maxConnections())
+                .setMaxConnPerRoute(properties.maxConnectionsPerRoute())
+                // Conexao ociosa reaproveitada que o outro lado ja fechou aparece como falha
+                // esporadica e inexplicavel de no. A revalidacao troca isso por um ida e volta.
+                .setValidateAfterInactivity(TimeValue.ofSeconds(5))
                 .setDefaultConnectionConfig(ConnectionConfig.custom()
                         .setConnectTimeout(Timeout.of(CONNECT_TIMEOUT))
                         .build())
@@ -117,7 +138,15 @@ public class HttpClientConfig {
      *       incluindo um controlado por terceiro;</li>
      *   <li>sem {@code useSystemProperties()}: e o que manteria o cliente livre de proxy de
      *       ambiente. Um {@code https_proxy} definido no host faria toda requisicao de saida passar
-     *       por um intermediario que a validacao de destino nao enxerga.</li>
+     *       por um intermediario que a validacao de destino nao enxerga;</li>
+     *   <li>{@code disableAutomaticRetries()}: superficie que a <b>troca de cliente trouxe</b>, e
+     *       nao uma politica transplantada -- por isso passou despercebida. O httpclient5 reexecuta
+     *       por padrao uma vez os metodos idempotentes em erro de E/S, e um {@code PUT} ou
+     *       {@code DELETE} cuja resposta se perdeu depois de o servidor processar seria reenviado:
+     *       o efeito colateral acontece duas vezes e a execucao registra um passo so. Reexecutar uma
+     *       requisicao escrita pelo usuario contra um terceiro qualquer e decisao de produto, nao
+     *       padrao de biblioteca a herdar; se um dia houver repeticao, ela mora na engine, onde vira
+     *       passo registrado.</li>
      * </ul>
      *
      * @param connectionManager gerenciador de conexoes com o resolvedor fixado
@@ -130,6 +159,7 @@ public class HttpClientConfig {
                 .disableRedirectHandling()
                 .disableCookieManagement()
                 .disableAuthCaching()
+                .disableAutomaticRetries()
                 .setDefaultRequestConfig(RequestConfig.custom()
                         .setResponseTimeout(Timeout.of(REQUEST_TIMEOUT))
                         .setConnectionRequestTimeout(Timeout.of(CONNECT_TIMEOUT))

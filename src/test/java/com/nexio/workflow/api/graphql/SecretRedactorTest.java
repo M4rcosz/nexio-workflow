@@ -191,4 +191,36 @@ class SecretRedactorTest {
     private static Map<String, Object> asMap(Object value) {
         return (Map<String, Object>) value;
     }
+
+    /**
+     * Endereco citado entre aspas dentro de uma frase tambem e mascarado.
+     *
+     * <p>O padrao {@code \S+} engolia a aspa final, {@code new URI} recusava o caractere, o
+     * {@code catch} devolvia o texto exatamente como veio e a credencial saia inteira. A frase entre
+     * aspas e das formas mais comuns de mensagem de cliente HTTP, e este texto vira a
+     * {@code errorMessage} de uma execucao, que hoje qualquer um le.</p>
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "I/O error for \"https://api.test/v1?api_key=chave-secreta\"",
+        "falhou em (https://api.test/v1?api_key=chave-secreta)",
+        "destino https://api.test/v1?api_key=chave-secreta.",
+        "destino https://api.test/v1?api_key=chave-secreta, tentando de novo",
+        "<https://api.test/v1?api_key=chave-secreta>"
+    })
+    void masksAnAddressQuotedInsideASentence(String message) {
+        String redacted = SecretRedactor.redactUrlsIn(message);
+
+        assertThat(redacted).contains(SecretRedactor.REDACTED).doesNotContain("chave-secreta");
+    }
+
+    /** A pontuacao que cercava o endereco continua no texto: so o segredo sai. */
+    @Test
+    void keepsThePunctuationAroundARedactedAddress() {
+        String redacted = SecretRedactor.redactUrlsIn(
+                "falhou para \"https://api.test/v1?api_key=segredo\" ok");
+
+        assertThat(redacted).isEqualTo(
+                "falhou para \"https://api.test/v1?api_key=" + SecretRedactor.REDACTED + "\" ok");
+    }
 }

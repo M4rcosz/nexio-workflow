@@ -79,3 +79,18 @@ Isso esta escrito no Javadoc da engine e fixado por teste
 a impressao de um limite que ele nao entrega. Quem precisar de parede de verdade tem que executar o
 no em outra thread e abandona-la no timeout, o que traz de volta a fronteira assincrona que esta ADR
 escolheu nao ter.
+
+## Correcao adicional (2026-08-08)
+
+**O pior caso de uma requisicao nao e `teto + um no`.** O texto acima e o Javadoc do
+`HttpClientConfig` tratavam `REQUEST_TIMEOUT` como "tempo limite total da requisicao". Nao e: o
+`responseTimeout` do httpclient5 vira o tempo limite de leitura do socket, ou seja, limita a
+**inatividade entre leituras**, nao a duracao da resposta. Um servidor que envia um byte a cada 9
+segundos nunca o dispara, e o teto de tempo da engine nao ajuda porque e conferido entre nos.
+
+Com isso, o tempo que uma unica requisicao anonima pode segurar uma thread e **ilimitado**. Fica
+declarado aqui em vez de silenciosamente errado: anunciar um limite que nao existe e pior do que
+declarar a ausencia dele -- e exatamente o erro que o item 4 da ADR 0002 cometeu.
+
+A correcao e um prazo de parede por no, aplicado na contagem de bytes da leitura (que ja roda a cada
+leitura). Nao foi feita nesta rodada.

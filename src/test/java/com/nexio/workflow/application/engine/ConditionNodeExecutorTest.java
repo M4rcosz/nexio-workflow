@@ -145,4 +145,33 @@ class ConditionNodeExecutorTest {
     private static WorkflowNode node(String expression) {
         return WorkflowNode.condition("checa", expression, "sim", "nao");
     }
+
+    /**
+     * Expressao gravada antes da regra de gramatica falha o no, e falha depressa.
+     *
+     * <p>O Javadoc do executor ja dizia que uma definicao antiga pode conter expressao hoje
+     * recusada, mas o codigo so tratava o caso de ela nao <i>compilar</i>. Selecao aninhada compila
+     * perfeitamente: 84 caracteres avaliam por 49 segundos, a cada disparo, numa thread de
+     * requisicao, sem nada que interrompa -- o teto de tempo da engine e conferido entre nos. O
+     * limite de tempo neste teste e o que distingue "recusou" de "avaliou": sem a reconferencia da
+     * gramatica ele estoura.</p>
+     */
+    @Test
+    void refusesALegacyExpressionThatWouldTakeSecondsToEvaluate() {
+        String bomb = "#t['i'].?[#t['i'].?[#t['i'].?[#t['i'].?[true].size>0].size>0].size>0].size>0";
+        java.util.List<Integer> itens = new java.util.ArrayList<>();
+        for (int i = 0; i < 200; i++) {
+            itens.add(i);
+        }
+        NodeExecutionContext context = new NodeExecutionContext(
+                "exec-1", Map.of("i", itens), Map.of());
+
+        long start = System.nanoTime();
+        NodeExecutionResult result = executor.execute(
+                WorkflowNode.condition("checa", bomb, "sim", "nao"), context);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(result.outcome()).isEqualTo(NodeOutcome.FAILURE);
+        assertThat(elapsedMs).as("a expressao foi avaliada em vez de recusada").isLessThan(2_000);
+    }
 }

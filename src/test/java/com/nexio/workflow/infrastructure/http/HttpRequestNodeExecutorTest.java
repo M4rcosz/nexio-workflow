@@ -32,6 +32,8 @@ import org.apache.hc.core5.util.Timeout;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -56,6 +58,9 @@ class HttpRequestNodeExecutorTest {
     private final AtomicReference<String> receivedBody = new AtomicReference<>();
     private final AtomicReference<String> receivedMethod = new AtomicReference<>();
     private final AtomicInteger requestCount = new AtomicInteger();
+    private final AtomicReference<String> receivedPath = new AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicBoolean chunked =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     /** O que o servidor de teste responde numa chamada. */
     private record Response(int status, String contentType, String body) {
@@ -256,6 +261,72 @@ class HttpRequestNodeExecutorTest {
         assertThat(result.error()).contains("Falha ao chamar o destino");
     }
 
+    /**
+     * Resposta acima do teto falha o no, com ou sem {@code Content-Length}.
+     *
+     * <p>O teto e aplicado em dois lugares com alcances diferentes, e um deles caia dentro do
+     * {@code readBody}. Com tamanho declarado, o interceptor recusa antes da funcao de troca e a
+     * falha sobe. Sem ele -- {@code Transfer-Encoding: chunked}, que e o caso que o proprio Javadoc
+     * do interceptor diz ser o que importa --, a contagem de bytes estourava no meio da leitura e o
+     * {@code catch} engolia: o passo virava SUCCESS com {@code body: null} e
+     * {@code truncated: false}, ou seja, afirmando que nada se perdeu.</p>
+     *
+     * <p>Duas respostas identicas davam desfechos opostos conforme um cabecalho escolhido por quem
+     * responde. O teste roda os dois modos para travar a simetria.</p>
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void anOversizedResponseFailsTheNodeWhicheverWayItIsFramed(boolean useChunkedEncoding) {
+        chunked.set(useChunkedEncoding);
+        handler.set(() -> new Response(200, "application/json",
+                "{\"x\":\"" + "a".repeat(300 * 1024) + "\"}"));
+
+        NodeExecutionResult result = executor.execute(getNode(), context());
+
+        assertThat(result.outcome().name()).isEqualTo("FAILURE");
+        assertThat(result.error()).contains("limite");
+    }
+
+    /**
+     * Os marcadores do no sao resolvidos antes da requisicao sair.
+     *
+     * <p>Sem isso um no HTTP so chama endereco fixo com corpo fixo, ou seja, nao consegue usar o
+     * evento que disparou a execucao -- que e quase tudo o que torna a engine util. Era o primeiro
+     * criterio de aceite da issue #23 e nao tinha sido implementado.</p>
+     */
+    @Test
+    void resolvesPlaceholdersInTheUrlHeadersAndBodyBeforeSending() {
+        WorkflowNode node = new WorkflowNode("chama", NodeType.HTTP_REQUEST,
+                "http://servico.test/pedidos/{{trigger.pedidoId}}", HttpMethod.POST,
+                Map.of("X-Pedido", "{{trigger.pedidoId}}"),
+                Map.of("total", "{{trigger.total}}"),
+                null, Map.of(), null, null, null);
+        NodeExecutionContext context = new NodeExecutionContext(
+                "exec-1", Map.of("pedidoId", "PED-1", "total", 150), Map.of());
+
+        NodeExecutionResult result = executor.execute(node, context);
+
+        assertThat(result.outcome().name()).isEqualTo("SUCCESS");
+        assertThat(receivedPath.get()).isEqualTo("/pedidos/PED-1");
+        assertThat(receivedHeaders).anyMatch(h -> h.equalsIgnoreCase("X-Pedido: PED-1"));
+        // O tipo sobrevive: 150 e numero, e nao "150". Sem isso a validacao do outro lado recusaria
+        // um corpo correto.
+        assertThat(receivedBody.get()).contains("\"total\":150");
+    }
+
+    /** Marcador sem valor falha o no, e a requisicao nao chega a sair. */
+    @Test
+    void aPlaceholderWithNoValueFailsTheNodeWithoutSendingTheRequest() {
+        WorkflowNode node = WorkflowNode.httpRequest("chama",
+                "http://servico.test/p/{{trigger.naoExiste}}", HttpMethod.GET, null, null, null);
+
+        NodeExecutionResult result = executor.execute(node, context());
+
+        assertThat(result.outcome().name()).isEqualTo("FAILURE");
+        assertThat(result.error()).contains("montar a requisicao");
+        assertThat(requestCount.get()).isZero();
+    }
+
     @Test
     void answersForHttpRequestNodes() {
         assertThat(executor.supportedType()).isEqualTo(NodeType.HTTP_REQUEST);
@@ -264,6 +335,7 @@ class HttpRequestNodeExecutorTest {
     private void respond(HttpExchange exchange) throws IOException {
         requestCount.incrementAndGet();
         receivedMethod.set(exchange.getRequestMethod());
+        receivedPath.set(exchange.getRequestURI().getPath());
         exchange.getRequestHeaders().forEach((name, values) -> {
             if (name.startsWith("X-")) {
                 receivedHeaders.add(name + ": " + String.join(",", values));
@@ -280,7 +352,7 @@ class HttpRequestNodeExecutorTest {
         }
         exchange.getResponseHeaders().add("Set-Cookie", "sessao=segredo");
         byte[] body = response.body().getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(response.status(), body.length);
+        exchange.sendResponseHeaders(response.status(), chunked.get() ? 0 : body.length);
         exchange.getResponseBody().write(body);
         exchange.close();
     }
@@ -306,6 +378,7 @@ class HttpRequestNodeExecutorTest {
                 .build();
         return RestClient.builder()
                 .requestFactory(new HttpComponentsClientHttpRequestFactory(client))
+                .requestInterceptor(new ResponseSizeLimitInterceptor())
                 .build();
     }
 

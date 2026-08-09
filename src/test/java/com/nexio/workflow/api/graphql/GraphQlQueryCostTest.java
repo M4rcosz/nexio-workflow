@@ -3,10 +3,14 @@ package com.nexio.workflow.api.graphql;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.nexio.workflow.application.usecase.CreateWorkflowUseCase;
+import com.nexio.workflow.application.usecase.GetExecutionUseCase;
+import com.nexio.workflow.application.usecase.ListExecutionsUseCase;
+import com.nexio.workflow.application.usecase.TriggerWorkflowUseCase;
 import com.nexio.workflow.application.usecase.DeleteWorkflowUseCase;
 import com.nexio.workflow.application.usecase.GetWorkflowUseCase;
 import com.nexio.workflow.application.usecase.ListWorkflowsUseCase;
@@ -41,7 +45,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
  * recebe a porta do ator por construtor -- nao teria como ser instanciado. Aqui vale o provedor
  * real: nada nestes testes olha o ator, e um duble so acrescentaria ruido.</p>
  */
-@GraphQlTest(WorkflowResolver.class)
+@GraphQlTest({WorkflowResolver.class, ExecutionResolver.class})
 @Import({GraphQLScalarsConfig.class, GraphQlQueryCostConfig.class, AnonymousActorProvider.class})
 class GraphQlQueryCostTest {
 
@@ -76,6 +80,15 @@ class GraphQlQueryCostTest {
 
     @MockitoBean
     private ListWorkflowsUseCase listWorkflowsUseCase;
+
+    @MockitoBean
+    private TriggerWorkflowUseCase triggerWorkflowUseCase;
+
+    @MockitoBean
+    private GetExecutionUseCase getExecutionUseCase;
+
+    @MockitoBean
+    private ListExecutionsUseCase listExecutionsUseCase;
 
     @Autowired
     private GraphQlTester graphQlTester;
@@ -140,5 +153,126 @@ class GraphQlQueryCostTest {
                 .execute()
                 .errors().verify()
                 .path("a0").entityList(Object.class).hasSize(0);
+    }
+
+    /**
+     * Uma pagina de execucoes pedindo os passos e recusada.
+     *
+     * <p>O calculo tratava "campo sem {@code limit}" como cardinalidade um, e {@code steps} nao tem
+     * argumento nenhum. Com isso {@code executions(limit: 100) { steps { ... } }} pontuava 1401 --
+     * passava com folga -- enquanto pedia ate cem documentos de execucao, cada um com ate
+     * {@value com.nexio.workflow.domain.model.WorkflowExecution#MAX_STEPS} passos cujo
+     * {@code output} e o corpo de resposta de um terceiro. Depois de lidos, todos ainda seriam
+     * copiados em profundidade pela redacao antes de serializar.</p>
+     *
+     * <p>E o mesmo defeito que motivou o calculo por {@code limit}, um nivel abaixo: quem escolhe o
+     * tamanho aqui e o servidor, entao a cardinalidade tem que vir do dominio.</p>
+     */
+    @Test
+    void refusesAPageOfExecutionsThatAlsoAsksForTheirSteps() {
+        graphQlTester.document("""
+                { executions(workflowId: "w", limit: 100) {
+                    id workflowId status triggerPayload createdAt startedAt finishedAt errorMessage
+                    steps { nodeId status output error executedAt }
+                  } }
+                """)
+                .execute()
+                .errors()
+                .satisfy(errors -> assertThat(errors).isNotEmpty());
+
+        verifyNoInteractions(listExecutionsUseCase);
+    }
+
+    /**
+     * Uma execucao unica com todos os passos continua cabendo: e a leitura normal do historico.
+     *
+     * <p>A afirmacao e que o caso de uso <i>foi chamado</i>, e nao que a resposta veio sem erro: o
+     * duble devolve nulo e o resolver estoura depois. O que esta sob teste e a decisao tomada antes
+     * de qualquer campo ser resolvido, e chegar ao caso de uso e exatamente a prova de que a
+     * consulta passou pela instrumentacao.</p>
+     */
+    @Test
+    void stillAcceptsASingleExecutionWithAllItsSteps() {
+        graphQlTester.document("""
+                { execution(id: "e") { id status steps { nodeId status output error executedAt } } }
+                """)
+                .execute()
+                .errors()
+                .satisfy(errors -> { });
+
+        verify(getExecutionUseCase).execute(any(), any());
+    }
+
+    /** Uma pagina de execucoes sem os passos tambem: e a listagem que um painel faz. */
+    @Test
+    void stillAcceptsAPageOfExecutionsWithoutSteps() {
+        when(listExecutionsUseCase.execute(any(), any(), any())).thenReturn(List.of());
+
+        graphQlTester.document("""
+                { executions(workflowId: "w", limit: 100) { id status createdAt finishedAt } }
+                """)
+                .execute()
+                .errors()
+                .satisfy(errors -> assertThat(errors).isEmpty());
+    }
+
+    /**
+     * Um documento nao pode disparar mais de um workflow.
+     *
+     * <p>{@code triggerWorkflow(id: "x") { id }} tem o formato mais barato do schema e vale 2, entao
+     * mil apelidos cabiam no teto de complexidade num documento de uns 40 KB. Campos de mutation na
+     * raiz executam em serie, ou seja, uma requisicao anonima comprava mil execucoes sincronas na
+     * mesma thread -- cada uma ate o teto de tempo da engine, cada uma capaz de duzentas chamadas
+     * HTTP de saida.</p>
+     */
+    @Test
+    void refusesADocumentThatTriggersMoreThanOneWorkflow() {
+        graphQlTester.document("""
+                mutation {
+                  a: triggerWorkflow(id: "w") { id }
+                  b: triggerWorkflow(id: "w") { id }
+                }
+                """)
+                .execute()
+                .errors()
+                .satisfy(errors -> {
+                    assertThat(errors).isNotEmpty();
+                    assertThat(errors.getFirst().getMessage()).contains("no maximo");
+                });
+
+        verifyNoInteractions(triggerWorkflowUseCase);
+    }
+
+    /**
+     * Esconder os disparos dentro de um fragmento nao contorna a regra.
+     *
+     * <p>Contar so os campos diretos da raiz seria uma regra que qualquer cliente desfaz em uma
+     * linha.</p>
+     */
+    @Test
+    void countsTriggersHiddenInsideAFragment() {
+        graphQlTester.document("""
+                mutation { ...Disparos }
+                fragment Disparos on Mutation {
+                  a: triggerWorkflow(id: "w") { id }
+                  b: triggerWorkflow(id: "w") { id }
+                }
+                """)
+                .execute()
+                .errors()
+                .satisfy(errors -> assertThat(errors).isNotEmpty());
+
+        verifyNoInteractions(triggerWorkflowUseCase);
+    }
+
+    /** Um disparo unico continua passando: a regra limita abuso, nao uso. */
+    @Test
+    void stillAcceptsASingleTrigger() {
+        graphQlTester.document("mutation { triggerWorkflow(id: \"w\") { id } }")
+                .execute()
+                .errors()
+                .satisfy(errors -> { });
+
+        verify(triggerWorkflowUseCase).execute(any(), any(), any());
     }
 }

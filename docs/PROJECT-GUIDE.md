@@ -699,7 +699,32 @@ safely kill a thread. What it does is check the clock **before starting each nod
 Real worst case: `cap + one node's duration` = 30s + 10s. That's written in the code's documentation
 and pinned by a test, rather than letting the config value imply a guarantee it doesn't provide.
 
-### 8.4 The condition executor
+### 8.4 Templates, and why the host is fixed
+
+`url`, `headers` and `body` support `{{trigger.field}}` and `{{steps.<nodeId>.field}}`, so a node can
+use the event that triggered it. Three decisions in the resolver matter more than they look:
+
+**Substitution is single-pass.** A value that happens to contain `{{...}}` is *not* resolved again.
+The naive implementation loops until no braces remain, and that is a vulnerability: the trigger
+payload comes from outside, so whoever fires the workflow would choose the text that becomes a
+placeholder on the second pass and read whatever they liked out of the context.
+
+**A missing field fails the node** rather than substituting empty. Empty would produce
+`https://api.example.com/orders/` — a different endpoint, quite possibly a collection instead of an
+item, and quite possibly a `DELETE` on it.
+
+**Values are percent-encoded in URLs**, chosen by position: path segment before the `?`, query
+parameter after. Without it, `../../admin` climbs the path and `&admin=true` appends a parameter —
+both inside a host the SSRF validation already approved, which is exactly the kind of redirection
+that validation cannot see.
+
+And the host is deliberately **not** templatable. `https://{{trigger.host}}/x` only exists at trigger
+time, so write-time SSRF validation would have nothing to check. Deferring wouldn't be *unsafe* — the
+runtime check is mandatory and pins DNS — but it costs two concrete things: the author stops finding
+out at `createWorkflow` that they wrote an internal address, and you can no longer read a stored
+workflow to learn which hosts it talks to. Path and query carry neither problem.
+
+### 8.5 The condition executor
 
 `ConditionNodeExecutor` evaluates a CONDITION node's expression and reports which branch won. The
 expression language is **SpEL** (Spring Expression Language), and the trigger payload is the root
@@ -725,7 +750,7 @@ Failing writes the reason into the step and marks the execution FAILED.
 The step's output records the boolean. It is the only thing the node produces, and it's what answers
 "why did the execution go that way?" when someone opens the history a month later.
 
-### 8.5 Why the expression language is deliberately crippled
+### 8.6 Why the expression language is deliberately crippled
 
 This is the most interesting security decision in the project, and it took two rounds to get right.
 
@@ -791,7 +816,7 @@ limit, which is worse than a known absence of one.
 With the grammar closed, evaluation is linear in the size of the tree, and the tree is bounded by the
 512-character limit. The bound now follows from the design instead of from a clock.
 
-### 8.6 The HTTP executor, and what it stores
+### 8.7 The HTTP executor, and what it stores
 
 `HttpRequestNodeExecutor` calls the URL and records what came back, always in the same shape:
 
@@ -1088,7 +1113,7 @@ was the only one addressing cost, and it was false. The engine's cap is checked 
 What makes this one instructive is that the ADR wasn't careless. It reasoned carefully about *reach*
 (what the expression can touch) and then treated the question as settled, without noticing that
 *cost* is a separate axis. `SimpleEvaluationContext` genuinely stops `Runtime.exec`. It has nothing
-to say about how long a loop runs. Full detail in §8.5.
+to say about how long a loop runs. Full detail in §8.6.
 
 ### 12.6 A response type that could never be serialised
 
@@ -1102,7 +1127,42 @@ failure only happens when the scalar is asked to serialise a selected field. Eve
 query asking for `createdAt` would have failed in production. Unit tests on the record would not have
 found it, because the record is not what is broken — the pairing of the record with the schema is.
 
-### 12.7 Redaction round-trip
+### 12.7 Two responses, opposite outcomes, decided by the sender
+
+An oversize HTTP response was capped in two places with different blast radii. With `Content-Length`
+declared, the interceptor refuses before the body is read and the node fails — correct. Without it
+(`Transfer-Encoding: chunked`, which the interceptor's own docs call the case that matters), the byte
+count trips *during* reading, the exception was wrapped, and a `catch (RuntimeException) { return
+null; }` swallowed it. The step was recorded **SUCCESS** with `body: null` and `truncated: false` —
+positively asserting nothing was lost.
+
+Two identical responses produced opposite outcomes based on a header the *remote* chooses. Found by
+review, then confirmed by running both modes against a real server.
+
+There is a second lesson underneath. My own executor test built its `RestClient` **without** the
+size-limit interceptor, so the cap was never exercised there at all. The first probe I ran to check
+the finding was therefore meaningless, and I only noticed because the numbers didn't add up. A test
+harness that omits a production component tests a system that doesn't exist.
+
+### 12.8 A thousand workflows per request
+
+`triggerWorkflow(id: "x") { id }` is the cheapest possible shape in the schema, so the complexity
+calculator scored it 2. Against a ceiling of 2000, that allowed roughly a thousand aliased copies in
+one ~40KB document — and GraphQL executes root mutation fields **serially**. One anonymous request
+bought a thousand synchronous executions on a single thread, each capable of 200 outbound HTTP calls.
+
+This is §9.5 for the third time: *the thing that decides how much work the server does was invisible
+to the instrumentation that exists to limit that work.* The pattern is worth naming because it keeps
+recurring in different clothes — first the `limit` argument, then unbounded nested lists (`steps`),
+now a mutation whose unit of work is an entire workflow run.
+
+The fix is a declared rule rather than a number, and that is the point: **no complexity score
+describes this honestly.** Set `triggerWorkflow`'s cost high enough that only one fits and any child
+selection breaks the ceiling; set it lower and ten triggers pass, which is already five minutes of
+held thread. So the rule is stated directly — at most one trigger per document — and it counts
+inside fragments, because a rule that only inspects the root is one a client undoes in a line.
+
+### 12.9 Redaction round-trip
 
 Covered in §9.1. A normal read-edit-save cycle destroyed credentials.
 
@@ -1121,7 +1181,18 @@ cases, GraphQL execution API and mock trigger endpoint; 447 tests.
 **Sprint 4:** authentication and authorization; `ownerId` on the aggregate with a migration and
 index; owner-scoped port methods; rate limiting; scheduler.
 
-**Known open items:**
+**Known open items** (each was found by review and is deliberately recorded rather than quietly
+carried):
+- The per-node HTTP timeout bounds *inactivity between reads*, not total duration, so a server
+  drip-feeding one byte every 9 seconds holds a request thread indefinitely. ADR 0005's worst case of
+  "cap + one node" is therefore false and is corrected there. The fix is a wall-clock deadline in the
+  byte counter.
+- `MAX_STEPS = 200` does not keep an execution document under BSON's 16MB, as its Javadoc claimed:
+  200 steps × a 256KB response body is ~51MB, and the real ceiling is around step 64. Needs a
+  cumulative byte budget, not a step count.
+- The old `exec_workflow_created` index is never dropped, so collections carry a dead index.
+- `@Profile("dev")` on the REST trigger endpoint is documented as a control it does not provide,
+  because `triggerWorkflow` reaches the same use case unrestricted over GraphQL.
 - No authentication at all.
 - No rate limiting, and the synchronous trigger now does real work: each call holds a request thread
   for up to the execution cap. That is a thread-pool exhaustion risk an anonymous caller can trigger.

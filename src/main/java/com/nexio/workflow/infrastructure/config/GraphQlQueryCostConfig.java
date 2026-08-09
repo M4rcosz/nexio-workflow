@@ -4,6 +4,7 @@ import graphql.analysis.FieldComplexityCalculator;
 import graphql.analysis.MaxQueryComplexityInstrumentation;
 import graphql.analysis.MaxQueryDepthInstrumentation;
 import org.springframework.context.annotation.Bean;
+import com.nexio.workflow.domain.model.WorkflowExecution;
 import org.springframework.context.annotation.Configuration;
 
 /**
@@ -75,9 +76,33 @@ public class GraphQlQueryCostConfig {
      */
     private static final FieldComplexityCalculator LIST_AWARE_COMPLEXITY = (env, childComplexity) -> {
         Object limit = env.getArguments().get("limit");
-        int cardinality = limit instanceof Number number ? number.intValue() : 1;
-        return 1 + cardinality * childComplexity;
+        if (limit instanceof Number number) {
+            return 1 + number.intValue() * childComplexity;
+        }
+        return 1 + serverImposedCardinality(env.getFieldDefinition().getName()) * childComplexity;
     };
+
+    /**
+     * Cardinalidade dos campos de lista que o cliente <b>nao</b> controla.
+     *
+     * <p>Tratar "sem {@code limit}" como um era a metade errada da regra. Vale para o campo escalar
+     * e para o objeto unico, mas nao para a lista cujo tamanho o servidor decide: {@code steps} nao
+     * tem argumento nenhum e pode trazer {@value WorkflowExecution#MAX_STEPS} elementos, cada um com
+     * um {@code output} que e o corpo de resposta de um terceiro. Com cardinalidade um,
+     * {@code executions(limit: 100) &#123; steps &#123; ... &#125; &#125;} pontuava 1401 contra o
+     * teto de {@value #MAX_COMPLEXITY} -- passava folgado enquanto pedia ate cem documentos de
+     * varios megabytes cada, que ainda seriam copiados em profundidade pela redacao antes de
+     * serializar.</p>
+     *
+     * <p>E o mesmo defeito que motivou o calculo por {@code limit}, um nivel abaixo: o que decide
+     * quanto trabalho o servidor faz continuava invisivel para a instrumentacao. A diferenca e que
+     * aqui quem escolhe o tamanho e o servidor, entao o numero tem que vir do dominio.</p>
+     */
+    private static int serverImposedCardinality(String fieldName) {
+        return STEPS_FIELD.equals(fieldName) ? WorkflowExecution.MAX_STEPS : 1;
+    }
+
+    private static final String STEPS_FIELD = "steps";
 
     /**
      * Recusa consultas mais aninhadas que {@value #MAX_DEPTH} niveis.
@@ -87,6 +112,20 @@ public class GraphQlQueryCostConfig {
     @Bean
     public MaxQueryDepthInstrumentation maxQueryDepthInstrumentation() {
         return new MaxQueryDepthInstrumentation(MAX_DEPTH);
+    }
+
+    /**
+     * Recusa um documento que dispare mais de um workflow.
+     *
+     * <p>Regra propria e nao um numero de complexidade: ver {@link SingleTriggerInstrumentation}
+     * para o porque de o teto de complexidade nao conseguir expressar isto sem quebrar o uso
+     * legitimo.</p>
+     *
+     * @return instrumentacao que limita disparos por documento
+     */
+    @Bean
+    public SingleTriggerInstrumentation singleTriggerInstrumentation() {
+        return new SingleTriggerInstrumentation();
     }
 
     /**

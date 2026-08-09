@@ -1,5 +1,6 @@
 package com.nexio.workflow.application.engine;
 
+import com.nexio.workflow.domain.model.ConditionExpressionValidator;
 import com.nexio.workflow.domain.model.TextSanitizer;
 import com.nexio.workflow.domain.model.WorkflowNode;
 import com.nexio.workflow.domain.model.enums.NodeType;
@@ -118,6 +119,15 @@ public class ConditionNodeExecutor implements NodeExecutor {
 
         Object value;
         try {
+            // A gramatica e conferida de novo aqui, e nao so na escrita. O Javadoc abaixo ja
+            // explicava que uma definicao gravada antes da regra pode conter expressao hoje
+            // recusada -- mas o codigo so tratava o caso de ela nao compilar. Uma expressao antiga
+            // com selecao aninhada compila perfeitamente e avalia por 49 segundos, a cada disparo,
+            // numa thread de requisicao, sem nada que a interrompa. E o mesmo raciocinio que faz a
+            // engine manter o teto de passos apesar de a escrita ja recusar ciclo: o anteparo de
+            // execucao nao pode depender do que ja esta no banco. Custa uma caminhada na arvore de
+            // uma expressao de no maximo 512 caracteres.
+            ConditionExpressionValidator.validate(node.expression(), node.nodeId());
             value = PARSER.parseExpression(node.expression())
                     .getValue(evaluationContext, context.triggerPayload());
         } catch (RuntimeException e) {

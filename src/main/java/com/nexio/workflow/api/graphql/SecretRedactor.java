@@ -210,6 +210,15 @@ public final class SecretRedactor {
     private static final Pattern EMBEDDED_URL = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
 
     /**
+     * Pontuacao que costuma seguir um endereco citado dentro de uma frase.
+     *
+     * <p>Nenhum destes caracteres pode aparecer sem escape num URI, entao remove-los do fim nunca
+     * corta parte do endereco de verdade -- e deixa-los la fazia o parse falhar e a redacao inteira
+     * desistir em silencio.</p>
+     */
+    private static final String TRAILING_PUNCTUATION = "\"'<>,;.)]}|`";
+
+    /**
      * Mascara os enderecos que aparecem <b>dentro</b> de um texto, e nao o texto inteiro.
      *
      * <p>Existe porque {@link #redactUrl(String)} nao resolve este caso e falhava em silencio: ele
@@ -231,8 +240,21 @@ public final class SecretRedactor {
         if (text == null || text.isBlank()) {
             return text;
         }
-        return EMBEDDED_URL.matcher(text).replaceAll(match ->
-                java.util.regex.Matcher.quoteReplacement(redactUrl(match.group())));
+        return EMBEDDED_URL.matcher(text).replaceAll(match -> {
+            String candidate = match.group();
+            // A pontuacao final que o \\S+ engoliu tem que sair antes do parse. Um endereco citado
+            // como `... falhou para "https://api.test/v1?api_key=SEGREDO"` termina em aspas, e aspas
+            // nao e caractere valido de URI: o new URI estourava, o catch devolvia o texto
+            // exatamente como veio e a credencial saia inteira. A frase entre aspas e das formas
+            // mais comuns de mensagem de cliente HTTP, entao o caso nao e de canto.
+            int end = candidate.length();
+            while (end > 0 && TRAILING_PUNCTUATION.indexOf(candidate.charAt(end - 1)) >= 0) {
+                end--;
+            }
+            String url = candidate.substring(0, end);
+            return java.util.regex.Matcher.quoteReplacement(
+                    redactUrl(url) + candidate.substring(end));
+        });
     }
 
     /**

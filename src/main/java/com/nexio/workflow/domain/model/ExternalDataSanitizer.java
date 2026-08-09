@@ -94,6 +94,17 @@ public final class ExternalDataSanitizer {
     public static Sanitized sanitize(Object source, int maxEntries, int maxDepth) {
         Budget budget = new Budget(Math.max(0, maxEntries), Math.max(0, maxDepth));
         Object value = sanitizeValue(source, budget, 0);
+        if (value == DROP) {
+            // O sentinela nunca pode sair daqui. Dentro de um mapa ele vira chave removida e dentro
+            // de uma lista vira null, mas o valor da raiz nao tinha tratamento: ele saia como um
+            // java.lang.Object cru, a politica estrita o recusava como "tipo nao suportado" e a
+            // execucao morria na gravacao do passo -- exatamente o que esta classe existe para
+            // impedir, e com droppedKeys zerado afirmando que nada se perdeu. Alcancavel: um
+            // servico respondendo text/plain com o proprio marcador de redacao no corpo, ou
+            // qualquer chamador passando maxDepth zero.
+            budget.dropped++;
+            value = null;
+        }
         return new Sanitized(value, budget.dropped, budget.truncated);
     }
 

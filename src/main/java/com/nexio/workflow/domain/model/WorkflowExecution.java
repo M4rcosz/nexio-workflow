@@ -42,8 +42,14 @@ import org.springframework.data.mongodb.core.mapping.Document;
 public class WorkflowExecution {
 
     /**
-     * Numero maximo de passos registrados em uma execucao. Um ciclo no grafo faria o documento
-     * crescer indefinidamente ate o limite de 16MB do BSON.
+     * Numero maximo de passos registrados em uma execucao.
+     *
+     * <p>Existe porque um ciclo no grafo faria o documento crescer sem parar. <b>Correcao:</b> este
+     * Javadoc dizia que o teto mantem o documento abaixo dos 16 MB do BSON, e isso e falso -- o
+     * {@code output} de um passo carrega o corpo de resposta de um terceiro, limitado a 256 KB, e
+     * 200 passos dao cerca de 51 MB. O limite do BSON e atingido por volta do 64o passo. O anteparo
+     * que falta e um orcamento de bytes acumulados; ver a correcao adicional em
+     * {@code docs/adr/0004-execution-step-persistence.md}.</p>
      */
     public static final int MAX_STEPS = 200;
 
